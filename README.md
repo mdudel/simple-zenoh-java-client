@@ -6,6 +6,9 @@ A simple project using the pure-Java Zenoh client from
 It is a simple ANT project used to show how to create a simple Java
 Zenoh Publisher and Subscriber.
 
+For the full list of builder options (TLS, mTLS, PEM/PKCS12 certs,
+WebSocket, hostname verification, etc.) see [API.md](API.md).
+
 ## Layout
 
 ```
