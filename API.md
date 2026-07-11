@@ -1,4 +1,4 @@
-# API reference — Publisher & Subscriber options
+# API reference: Publisher & Subscriber options
 
 This page documents every builder option on `PureJavaZenohPublisher` and
 `PureJavaZenohSubscriber`, plus examples for TCP, TLS, mTLS, WebSocket,
@@ -27,7 +27,7 @@ Any other scheme throws `IOException("unsupported endpoint scheme …")`.
 
 ---
 
-## Builder options — Publisher
+## Builder options: Publisher
 
 `PureJavaZenohPublisher.builder()`:
 
@@ -43,7 +43,7 @@ Any other scheme throws `IOException("unsupported endpoint scheme …")`.
 | `verifyHostname(boolean)`                 | `true`                         | Verify the router's cert SAN against the endpoint host. Turn off ONLY for lab/dev. |
 | `leaseMs(long)`                           | `ZenohSession.DEFAULT_LEASE_MS`| Session lease (keepalive interval). |
 
-## Builder options — Subscriber
+## Builder options: Subscriber
 
 `PureJavaZenohSubscriber.builder()`:
 
@@ -66,8 +66,9 @@ options, same defaults, same `org` prefix behaviour.
 
 ## Certificate formats
 
-The client auto-detects PEM vs PKCS12 by file extension. No config
-knob for "which format" — just point at the right file.
+The client auto-detects PEM vs PKCS12 by file extension. There is no
+setting to choose the format: it is decided from the file name, so
+just point at the right file.
 
 | Extension                       | Treated as | Password used? |
 |---------------------------------|------------|----------------|
@@ -84,11 +85,11 @@ Anything else throws `IOException` at `start()`.
 ### Client keystore (mTLS) rules
 Three legal shapes:
 
-1. **PEM pair** — set both `clientCertPath` (`.pem`/`.crt`/`.cer`) and
+1. **PEM pair**: set both `clientCertPath` (`.pem`/`.crt`/`.cer`) and
    `clientKeyPath` (`.key`/`.pem`).
-2. **PKCS12 combined** — set BOTH `clientCertPath` and `clientKeyPath`
+2. **PKCS12 combined**: set BOTH `clientCertPath` and `clientKeyPath`
    to the **same** `.p12` file.
-3. **PKCS12 with one side set** — set exactly one of
+3. **PKCS12 with one side set**: set exactly one of
    `clientCertPath` or `clientKeyPath` to a `.p12`; the client treats
    it as a combined keystore. Password: `keyStorePassword`.
 
@@ -188,7 +189,7 @@ PureJavaZenohPublisher pub = PureJavaZenohPublisher.builder()
 pub.start();
 ```
 
-### 8. Lab / dev — skip hostname verification
+### 8. Lab / dev: skip hostname verification
 
 **Never do this against production.** Only useful when the router
 presents a cert whose SAN doesn't match the endpoint you're using
@@ -204,7 +205,7 @@ PureJavaZenohSubscriber sub = PureJavaZenohSubscriber.builder()
 
 ---
 
-## Publisher API — beyond `start()` / `publish()`
+## Publisher API: beyond `start()` / `publish()`
 
 | Method                                    | Returns  | Notes |
 |-------------------------------------------|----------|-------|
@@ -220,23 +221,23 @@ PureJavaZenohSubscriber sub = PureJavaZenohSubscriber.builder()
 
 ---
 
-## Subscriber API — beyond `start()` / `subscribeAndConsume()`
+## Subscriber API: beyond `start()` / `subscribeAndConsume()`
 
 The subscriber gives you two ways to receive samples:
 
-- **Push (callback)** — you hand in a function; the client calls it for
-  every sample. Zero threading code on your side.
-- **Pull (loop)** — you get a `Subscription` handle and call
+- **Push (callback)**: you hand in a function, and the client calls it
+  for every sample. Zero threading code on your side.
+- **Pull (loop)**: you get a `Subscription` handle and call
   `take()` / `poll(...)` on it yourself.
 
 Both use the same underlying queue. Pick whichever fits your app.
 
-### Push style — your own callback function
+### Push style: your own callback function
 
 `subscribeAndConsume(keyExpr, callback)` IS the callback path. The
-second argument is any `Consumer<Sample>` — a plain lambda, a method
-reference, or a class that implements the interface. The client spins
-up a daemon thread and calls your function once per sample; the
+second argument is any `Consumer<Sample>`, meaning a plain lambda, a
+method reference, or a class that implements the interface. The client
+spins up a daemon thread and calls your function once per sample; the
 `subscribeAndConsume` call itself returns immediately.
 
 ```java
@@ -258,19 +259,15 @@ subscriber.subscribeAndConsume("demo/**", new Consumer<Sample>() {
 
 Rules for the callback:
 - It runs on the subscription's daemon thread, NOT the caller's.
-- Don't block inside it — slow callbacks back up the inbound queue and
+- Don't block inside it: slow callbacks back up the inbound queue and
   eventually stall the whole session. If work is heavy, hand samples
   off to your own `ExecutorService` inside the callback.
 - Exceptions thrown from the callback are logged and swallowed; the
   subscription keeps running.
 
 If you want the same push behaviour but already have a `Subscription`
-handle from `subscribe(keyExpr)`, call `sub.forEach(callback)` — it
+handle from `subscribe(keyExpr)`, call `sub.forEach(callback)`; it
 does exactly what `subscribeAndConsume` does under the hood.
-
-> Note: the earlier draft of this doc showed a placeholder `process(...)`
-> call in the pull-style loop below. That is NOT a real client method —
-> just an example of "your code that does something with the sample."
 
 ### Pull style (caller drives the loop)
 
@@ -340,15 +337,15 @@ try (PureJavaZenohSubscriber.TopicDiscovery td =
 Both client classes are safe to share across threads once `start()` has
 returned:
 
-- `publish(...)` — safe from any thread.
-- `subscribe(...)` — safe from any thread; each returned `Subscription`
+- `publish(...)`: safe from any thread.
+- `subscribe(...)`: safe from any thread; each returned `Subscription`
   has its own queue.
-- `Subscription.take()` / `.poll()` — one consumer thread per
+- `Subscription.take()` / `.poll()`: one consumer thread per
   subscription is the sane pattern; multiple consumers race on the
   same queue and each sample only goes to one of them.
-- `Subscription.forEach(...)` — starts an internal daemon thread; do
+- `Subscription.forEach(...)`: starts an internal daemon thread; do
   not block inside the callback (back-pressures the inbound queue).
-- `close()` / `stop()` — safe to call from any thread and safe to call
+- `close()` / `stop()`: safe to call from any thread, and safe to call
   more than once (extra calls are no-ops).
 
 ---
@@ -359,9 +356,9 @@ returned:
 |---------------------------------------------------------------------------------|-------------|
 | `connectEndpoint is required`                                                   | Builder was built without `connectEndpoint(...)`. |
 | `unsupported endpoint scheme '…'`                                               | Typo or unsupported proto. Only `tcp`/`tls`/`ws`/`wss` are legal. |
-| `session open failed: handshake failure: connect failed to tcp`                 | Router unreachable. Windows: try `tcp/[::1]:7447` — see the class Javadoc on the sample. |
+| `session open failed: handshake failure: connect failed to tcp`                 | Router unreachable. Windows: try `tcp/[::1]:7447`; see the class Javadoc on the sample. |
 | `session open failed: InitAck not received`                                     | You connected `tls/...` to a plaintext router, or `tcp/...` to a TLS router. Match the scheme to the router config. |
-| `rootCaCertPath must end in .pem/.crt/.cer (PEM) or .p12/.pfx (PKCS12)`         | Unknown extension — rename or convert. |
+| `rootCaCertPath must end in .pem/.crt/.cer (PEM) or .p12/.pfx (PKCS12)`         | Unknown extension: rename or convert. |
 | `for PKCS12 client keystore, set clientCertPath and clientKeyPath to the SAME .p12 file` | Point both at the one `.p12` (or leave one empty). |
 | `PEM client authentication requires BOTH clientCertPath AND clientKeyPath`      | You gave a `.pem` cert without the matching `.key`. |
 | `PureJavaZenohPublisher is not started`                                         | Called `publish` before `start()`, or after `stop()`. |
@@ -370,17 +367,19 @@ returned:
 
 ## What is NOT (yet) exposed on the client class
 
-For advanced TLS knobs (enabled protocols, cipher suites, handshake
+For advanced TLS settings (enabled protocols, cipher suites, handshake
 timeout, PKCS11) you drop below the client class and build a
 `TlsConfig` directly, then construct `TlsTransport` / `WsTransport`
 by hand. See `TlsConfig.Builder` in the source
-(`src/io/mdudel/zenoh/purejava/transport/TlsConfig.java`) — the
+(`src/io/mdudel/zenoh/purejava/transport/TlsConfig.java`); the
 builder methods there include `enabledProtocols(...)`,
 `enabledCipherSuites(...)`, `handshakeTimeoutMs(...)`,
 `needClientAuth(...)`, `trustStoreType(...)`, `keyStoreType(...)`.
 
 If you find yourself needing one of these often, ping mdudel to
-promote it onto the client builder.
+promote it onto the client builder, or open an issue on the repo;
+anybody is welcome to. Response is not guaranteed to be timely: this
+is coded at home, in my underwear, while drinking beer.
 
 ---
 
@@ -394,37 +393,37 @@ any of the items below, use the JNI-backed sibling in
 instead.
 
 **Transports not supported:**
-- **QUIC** (`quic/`, `quic://`) — official Zenoh supports QUIC as a
+- **QUIC** (`quic/`, `quic://`): official Zenoh supports QUIC as a
   first-class transport; this client does not.
-- **UDP unicast / multicast** — the official client can peer over UDP
+- **UDP unicast / multicast**: the official client can peer over UDP
   and multicast; this client is TCP/TLS/WS/WSS only.
 - **Unix domain sockets** (`unixsock-stream/...`).
 - **Serial / VSOCK** and other exotic transports the Rust client
   exposes via feature flags.
 
 **Zenoh features not implemented:**
-- **Peer mode** — this client only speaks Zenoh **client** mode
+- **Peer mode**: this client only speaks Zenoh **client** mode
   (connects to a router). It cannot act as a peer or a router itself.
-- **Multicast discovery / scouting** — no gossip discovery; you must
+- **Multicast discovery / scouting**: no gossip discovery; you must
   point `connectEndpoint` at a known router.
-- **Queryables and `get()` queries** — you can publish and subscribe,
+- **Queryables and `get()` queries**: you can publish and subscribe,
   but you cannot serve or issue Zenoh queries.
-- **Liveliness tokens** — declare / undeclare liveliness is not
+- **Liveliness tokens**: declare / undeclare liveliness is not
   exposed.
-- **Storage / replication / alignment** — no built-in storage
+- **Storage / replication / alignment**: no built-in storage
   backends, no replication protocol, no eventual-consistency alignment.
 - **Attachments** on publications (per-sample metadata beyond payload
   + encoding).
-- **Priority, congestion-control, and reliability knobs** on publish
-  — samples go with router defaults.
-- **Batching / compression** — samples are sent one PUSH per call;
+- **Priority, congestion-control, and reliability settings** on
+  publish: samples go with router defaults.
+- **Batching / compression**: samples are sent one PUSH per call;
   the official client can batch and optionally compress.
-- **Access-control / authentication tokens** beyond mTLS — no
+- **Access-control / authentication tokens** beyond mTLS: no
   username/password auth, no OIDC.
-- **Session recovery / auto-reconnect** — if the transport dies you
+- **Session recovery / auto-reconnect**: if the transport dies you
   get an `IOException` on the next publish and must call `stop()` +
   `start()` yourself.
-- **Shared-memory transport** — the SHM optimisation is native-only.
+- **Shared-memory transport**: the SHM optimisation is native-only.
 
 **Wire-protocol coverage:**
 - Implements Zenoh 1.x INIT / OPEN / CLOSE / KEEPALIVE / FRAME / PUSH /

@@ -37,7 +37,7 @@ Defaults assume a local `zenohd` on `tcp/localhost:7447`. On Windows,
 if you hit `Connection refused: getsockopt`, use `tcp/[::1]:7447` or
 start `zenohd` with `--listen tcp/0.0.0.0:7447 --listen tcp/[::]:7447`.
 
-## Publisher — core sample code
+## Publisher: core sample code
 
 ```java
 PureJavaZenohPublisher zenohPublisher = PureJavaZenohPublisher.builder()
@@ -53,7 +53,7 @@ zenohPublisher.publish("hello from pure-Java"
 zenohPublisher.stop();           // clean CLOSE (or use try-with-resources)
 ```
 
-## Subscriber — core sample code
+## Subscriber: core sample code
 
 ```java
 PureJavaZenohSubscriber zenohSubscriber = PureJavaZenohSubscriber.builder()
