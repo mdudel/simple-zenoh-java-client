@@ -1,8 +1,8 @@
 # API reference — Publisher & Subscriber options
 
 This page documents every builder option on `PureJavaZenohPublisher` and
-`PureJavaZenohSubscriber`, plus recipes for TCP, TLS, mTLS, WebSocket,
-and the certificate formats the facade accepts.
+`PureJavaZenohSubscriber`, plus examples for TCP, TLS, mTLS, WebSocket,
+and the certificate formats the client accepts.
 
 For a quick-start "just show me the code" version, see the
 [README](README.md). For end-to-end runnable samples, see
@@ -13,8 +13,8 @@ and [`ZenohJavaSubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaSubAnt.java).
 
 ## Endpoint syntax
 
-Both facades take a single `connectEndpoint(String)` in either the
-classic Zenoh form or a URI:
+Both client classes take a single `connectEndpoint(String)` in either
+the classic Zenoh form or a URI:
 
 | Scheme | Classic form         | URI form                        | Transport      | TLS args required |
 |--------|----------------------|---------------------------------|----------------|-------------------|
@@ -47,8 +47,8 @@ Any other scheme throws `IOException("unsupported endpoint scheme …")`.
 
 `PureJavaZenohSubscriber.builder()`:
 
-Identical to the publisher **minus `keyExpr`** (the subscriber takes the
-key expression per-subscription, not at build time). Same TLS/mTLS
+Identical to the publisher **minus `keyExpr`** (the subscriber takes
+the key expression per-subscription, not at build time). Same TLS/mTLS
 options, same defaults, same `org` prefix behaviour.
 
 | Method                                    | Default                        | Purpose |
@@ -66,7 +66,7 @@ options, same defaults, same `org` prefix behaviour.
 
 ## Certificate formats
 
-The facade auto-detects PEM vs PKCS12 by file extension. No config
+The client auto-detects PEM vs PKCS12 by file extension. No config
 knob for "which format" — just point at the right file.
 
 | Extension                       | Treated as | Password used? |
@@ -89,7 +89,7 @@ Three legal shapes:
 2. **PKCS12 combined** — set BOTH `clientCertPath` and `clientKeyPath`
    to the **same** `.p12` file.
 3. **PKCS12 with one side set** — set exactly one of
-   `clientCertPath` or `clientKeyPath` to a `.p12`; the facade treats
+   `clientCertPath` or `clientKeyPath` to a `.p12`; the client treats
    it as a combined keystore. Password: `keyStorePassword`.
 
 Illegal shapes throw `IOException` at `start()` with an explicit
@@ -97,7 +97,7 @@ Illegal shapes throw `IOException` at `start()` with an explicit
 
 ---
 
-## Recipes
+## Examples
 
 ### 1. Plain TCP (no TLS)
 
@@ -216,11 +216,61 @@ PureJavaZenohSubscriber sub = PureJavaZenohSubscriber.builder()
 | `getEffectiveKeyExpr()`                   | `String` | Result of `KeyExpr.resolveKey(org, keyExpr)`. |
 | `isActive()`                              | `boolean`| `true` when the session state is `OPEN`. |
 | `getLastError()`                          | `String` | Last recorded failure message, or `null`. |
-| `stop()` / `close()`                      | `void`   | Idempotent; sends CLOSE, tears down transport. `AutoCloseable`. |
+| `stop()` / `close()`                      | `void`   | Sends CLOSE, tears down transport. Safe to call more than once (no-op after the first). Implements `AutoCloseable`. |
 
 ---
 
 ## Subscriber API — beyond `start()` / `subscribeAndConsume()`
+
+The subscriber gives you two ways to receive samples:
+
+- **Push (callback)** — you hand in a function; the client calls it for
+  every sample. Zero threading code on your side.
+- **Pull (loop)** — you get a `Subscription` handle and call
+  `take()` / `poll(...)` on it yourself.
+
+Both use the same underlying queue. Pick whichever fits your app.
+
+### Push style — your own callback function
+
+`subscribeAndConsume(keyExpr, callback)` IS the callback path. The
+second argument is any `Consumer<Sample>` — a plain lambda, a method
+reference, or a class that implements the interface. The client spins
+up a daemon thread and calls your function once per sample; the
+`subscribeAndConsume` call itself returns immediately.
+
+```java
+// Lambda form -- what the sample uses.
+subscriber.subscribeAndConsume("demo/**", sample ->
+        System.out.println(sample.key() + " -> " + sample.payloadAsString()));
+
+// Method reference to your own handler.
+subscriber.subscribeAndConsume("demo/**", MyApp::handleSample);
+
+// Or a full class if the handler carries state.
+subscriber.subscribeAndConsume("demo/**", new Consumer<Sample>() {
+    @Override public void accept(Sample s) {
+        myBuffer.add(s);
+        myMetrics.increment();
+    }
+});
+```
+
+Rules for the callback:
+- It runs on the subscription's daemon thread, NOT the caller's.
+- Don't block inside it — slow callbacks back up the inbound queue and
+  eventually stall the whole session. If work is heavy, hand samples
+  off to your own `ExecutorService` inside the callback.
+- Exceptions thrown from the callback are logged and swallowed; the
+  subscription keeps running.
+
+If you want the same push behaviour but already have a `Subscription`
+handle from `subscribe(keyExpr)`, call `sub.forEach(callback)` — it
+does exactly what `subscribeAndConsume` does under the hood.
+
+> Note: the earlier draft of this doc showed a placeholder `process(...)`
+> call in the pull-style loop below. That is NOT a real client method —
+> just an example of "your code that does something with the sample."
 
 ### Pull style (caller drives the loop)
 
@@ -229,7 +279,7 @@ Subscription sub = subscriber.subscribe("demo/**");
 while (running) {
     Sample s = sub.take();              // blocks
     // Sample s = sub.poll(500, TimeUnit.MILLISECONDS);  // or with timeout
-    process(s.key(), s.payload());
+    myOwnHandler(s.key(), s.payload()); // <- your code, whatever you call it
 }
 sub.close();
 ```
@@ -243,7 +293,7 @@ sub.close();
 | `forEach(Consumer<Sample>)`         | `void`   | Push-style; starts a daemon thread pumping samples into the callback. `subscribeAndConsume` calls this internally. |
 | `receivedCount()`                   | `long`   | Cumulative for THIS subscription. |
 | `isOpen()`                          | `boolean`| |
-| `close()`                           | `void`   | Sends UNDECLARE_SUBSCRIBER, drains the queue. Idempotent. |
+| `close()`                           | `void`   | Sends UNDECLARE_SUBSCRIBER, drains the queue. Safe to call more than once. |
 | `id()` / `keyExpr()`                | `long` / `KeyExpr` | Diagnostic. |
 
 `Sample`:
@@ -287,7 +337,7 @@ try (PureJavaZenohSubscriber.TopicDiscovery td =
 
 ## Threading
 
-Both facades are safe to share across threads once `start()` has
+Both client classes are safe to share across threads once `start()` has
 returned:
 
 - `publish(...)` — safe from any thread.
@@ -298,7 +348,8 @@ returned:
   same queue and each sample only goes to one of them.
 - `Subscription.forEach(...)` — starts an internal daemon thread; do
   not block inside the callback (back-pressures the inbound queue).
-- `close()` / `stop()` — idempotent from any thread.
+- `close()` / `stop()` — safe to call from any thread and safe to call
+  more than once (extra calls are no-ops).
 
 ---
 
@@ -317,10 +368,10 @@ returned:
 
 ---
 
-## What is NOT (yet) exposed on the facade
+## What is NOT (yet) exposed on the client class
 
 For advanced TLS knobs (enabled protocols, cipher suites, handshake
-timeout, PKCS11) you drop below the facade and build a
+timeout, PKCS11) you drop below the client class and build a
 `TlsConfig` directly, then construct `TlsTransport` / `WsTransport`
 by hand. See `TlsConfig.Builder` in the source
 (`src/io/mdudel/zenoh/purejava/transport/TlsConfig.java`) — the
@@ -329,4 +380,69 @@ builder methods there include `enabledProtocols(...)`,
 `needClientAuth(...)`, `trustStoreType(...)`, `keyStoreType(...)`.
 
 If you find yourself needing one of these often, ping mdudel to
-promote it onto the facade builder.
+promote it onto the client builder.
+
+---
+
+## What is missing vs the official Zenoh client
+
+This pure-Java client covers the everyday publish / subscribe use case
+against a Zenoh 1.x router. It is intentionally NOT a feature-complete
+replacement for the official Rust/JNI Zenoh client. If your app needs
+any of the items below, use the JNI-backed sibling in
+[java-zenoh-publisher](https://github.com/mdudel/java-zenoh-publisher)
+instead.
+
+**Transports not supported:**
+- **QUIC** (`quic/`, `quic://`) — official Zenoh supports QUIC as a
+  first-class transport; this client does not.
+- **UDP unicast / multicast** — the official client can peer over UDP
+  and multicast; this client is TCP/TLS/WS/WSS only.
+- **Unix domain sockets** (`unixsock-stream/...`).
+- **Serial / VSOCK** and other exotic transports the Rust client
+  exposes via feature flags.
+
+**Zenoh features not implemented:**
+- **Peer mode** — this client only speaks Zenoh **client** mode
+  (connects to a router). It cannot act as a peer or a router itself.
+- **Multicast discovery / scouting** — no gossip discovery; you must
+  point `connectEndpoint` at a known router.
+- **Queryables and `get()` queries** — you can publish and subscribe,
+  but you cannot serve or issue Zenoh queries.
+- **Liveliness tokens** — declare / undeclare liveliness is not
+  exposed.
+- **Storage / replication / alignment** — no built-in storage
+  backends, no replication protocol, no eventual-consistency alignment.
+- **Attachments** on publications (per-sample metadata beyond payload
+  + encoding).
+- **Priority, congestion-control, and reliability knobs** on publish
+  — samples go with router defaults.
+- **Batching / compression** — samples are sent one PUSH per call;
+  the official client can batch and optionally compress.
+- **Access-control / authentication tokens** beyond mTLS — no
+  username/password auth, no OIDC.
+- **Session recovery / auto-reconnect** — if the transport dies you
+  get an `IOException` on the next publish and must call `stop()` +
+  `start()` yourself.
+- **Shared-memory transport** — the SHM optimisation is native-only.
+
+**Wire-protocol coverage:**
+- Implements Zenoh 1.x INIT / OPEN / CLOSE / KEEPALIVE / FRAME / PUSH /
+  DECLARE (subscribers only) / UNDECLARE / INTEREST (for topic
+  discovery). Everything else is out of scope.
+- Extension fields on messages are decoded when needed and otherwise
+  passed through unchanged; unknown extensions do not fail parsing.
+
+**When to use which:**
+
+| You need…                                       | This client | JNI (official) |
+|-------------------------------------------------|:-----------:|:--------------:|
+| Publish + subscribe over TCP/TLS/WS/WSS         | ✅          | ✅             |
+| mTLS with PEM or PKCS12                         | ✅          | ✅             |
+| Any-JDK-17 platform (Apple Silicon, ARM, etc.)  | ✅          | ⚠ x86_64 only |
+| Zero native binaries / accreditable source-only | ✅          | ❌             |
+| QUIC / UDP / multicast                          | ❌          | ✅             |
+| Peer or router mode                             | ❌          | ✅             |
+| Queryables + get queries                        | ❌          | ✅             |
+| Storage / replication                           | ❌          | ✅             |
+| Shared-memory transport                         | ❌          | ✅             |
