@@ -1,0 +1,22 @@
+# NetBeans / Ant build output
+build/
+dist/
+nbproject/private/
+
+# IDE cruft
+.nb-gradle/
+.classpath
+.project
+.settings/
+.idea/
+*.iml
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local secrets / configs — never commit
+*.p12
+*.jks
+*.pem
+!src/**/test-*.pem
