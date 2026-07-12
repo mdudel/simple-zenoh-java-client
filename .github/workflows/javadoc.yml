@@ -81,6 +81,27 @@ jobs:
           # some layouts' _index.html) would otherwise be dropped.
           touch public/.nojekyll
 
+      # Copy any search-engine verification / crawler-hint files from the
+      # repo root into the published site root, so Google/Bing/etc can
+      # verify ownership of https://<user>.github.io/<repo>/. These live
+      # on `main` (a static-content branch would be cleaner, but keeping
+      # everything on `main` matches how Marty added the Google file).
+      # Silent no-op if a given file is absent; force_orphan on the deploy
+      # step would otherwise wipe them on every rebuild.
+      - name: Copy site-verification / crawler files into published site
+        run: |
+          set -eu
+          # Google Search Console (any google*.html at repo root)
+          for f in google*.html; do
+            [ -e "$f" ] || continue
+            cp -v "$f" public/
+          done
+          # Bing Webmaster (BingSiteAuth.xml is the canonical filename)
+          [ -f BingSiteAuth.xml ] && cp -v BingSiteAuth.xml public/ || true
+          # robots.txt and sitemap.xml if present, likewise
+          [ -f robots.txt   ] && cp -v robots.txt   public/ || true
+          [ -f sitemap.xml  ] && cp -v sitemap.xml  public/ || true
+
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
