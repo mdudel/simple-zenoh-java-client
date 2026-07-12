@@ -1,13 +1,15 @@
-# API reference: Publisher & Subscriber options
+# API reference: Publisher, Subscriber & Scout options
 
-This page documents every builder option on `PureJavaZenohPublisher` and
-`PureJavaZenohSubscriber`, plus examples for TCP, TLS, mTLS, WebSocket,
-and the certificate formats the client accepts.
+This page documents every builder option on `PureJavaZenohPublisher`,
+`PureJavaZenohSubscriber`, and `PureJavaZenohScout`, plus examples for
+TCP, TLS, mTLS, WebSocket, multicast discovery, and the certificate
+formats the client accepts.
 
 For a quick-start "just show me the code" version, see the
 [README](README.md). For end-to-end runnable samples, see
-[`ZenohJavaPubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaPubAnt.java)
-and [`ZenohJavaSubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaSubAnt.java).
+[`ZenohJavaPubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaPubAnt.java),
+[`ZenohJavaSubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaSubAnt.java),
+and [`ZenohJavaScoutAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaScoutAnt.java).
 
 ---
 
@@ -24,6 +26,10 @@ the classic Zenoh form or a URI:
 | `wss`  | `wss/host:port`      | `wss://host:port/path`          | WebSocket + TLS| see below         |
 
 Any other scheme throws `IOException("unsupported endpoint scheme …")`.
+
+The scout is different: it does NOT take a `connectEndpoint`. It joins
+a UDP multicast group (default `224.0.0.224:7446`) and never opens a
+TCP/TLS session. See [Builder options: Scout](#builder-options-scout).
 
 ---
 
@@ -61,6 +67,37 @@ options, same defaults, same `org` prefix behaviour.
 | `keyStorePassword(char[])`                | `"changeit"`                   | PKCS12 password. |
 | `verifyHostname(boolean)`                 | `true`                         | Hostname verification. |
 | `leaseMs(long)`                           | `ZenohSession.DEFAULT_LEASE_MS`| Session lease. |
+
+## Builder options: Scout
+
+`PureJavaZenohScout.builder()`:
+
+The scout is a UDP multicast observer. No `connectEndpoint`, no TLS,
+no session. All fields are optional; the defaults are the standard
+Zenoh scouting group + a sensible active-mode cadence.
+
+| Method                                    | Default                        | Purpose |
+|-------------------------------------------|--------------------------------|---------|
+| `mode(Mode)`                              | `Mode.ACTIVE`                  | `ACTIVE` = listen AND emit SCOUTs; `PASSIVE` = listen only. |
+| `multicastAddress(String)`                | `"224.0.0.224"`                | Multicast group address. Change only for a non-standard deployment. |
+| `multicastPort(int)`                      | `7446`                         | UDP port. Change only for a non-standard deployment. |
+| `networkInterface(String)`                | auto-detect                    | Bind to a specific NIC by system name (`eth0`, `wg0`, `en0`, `utun0`). |
+| `networkInterfaces(Collection<NetworkInterface>)` | auto-detect            | Explicit multi-NIC bind. If unset, every up + non-loopback + multicast-capable NIC is used. |
+| `whatAmIMatcher(WhatAmIMatcher)`          | `WhatAmIMatcher.any()`         | Filter which roles you care about. Applied on emitted SCOUTs AND inbound HELLOs. |
+| `role(WhatAmI)`                           | *(shortcut)*                   | Sugar for `whatAmIMatcher(WhatAmIMatcher.of(role))`. |
+| `roles(Set<WhatAmI>)`                     | *(shortcut)*                   | Sugar for a multi-role matcher. |
+| `scoutIntervalMillis(long)`               | `3000`                         | Time between active-mode SCOUT emissions. Minimum `250`. |
+| `staleTimeoutMillis(long)`                | `15000`                        | Age at which a silent node fires `onExpire` and is dropped from the registry. Minimum `500`. |
+| `protocolVersion(int)`                    | `0x09`                         | Protocol version placed in emitted SCOUTs. |
+| `selfZid(ZenohId)`                        | *none*                         | Optional own ZID in SCOUTs; default omits it so the `I` flag stays 0. |
+| `receiveBufferBytes(int)`                 | `65507`                        | Per-packet receive buffer (UDP max). |
+| `listener(ScoutListener)`                 | *none*                         | Single listener attached at build time. For multiple, use `scout.addListener(...)`. |
+
+**Mode semantics.** `ACTIVE` always includes listening — SCOUT replies
+arrive on the same socket. `PASSIVE` skips the SCOUT scheduler; you
+only hear nodes that self-advertise. Some routers auto-advertise via
+periodic multicast HELLO on their own, so passive discovery still
+works against them, just slower.
 
 ---
 
@@ -203,6 +240,84 @@ PureJavaZenohSubscriber sub = PureJavaZenohSubscriber.builder()
         .build();
 ```
 
+### 9. Scout: active discovery of any nearby node
+
+```java
+PureJavaZenohScout scout = PureJavaZenohScout.builder()
+        .listener(new ScoutListener() {
+            @Override public void onDiscover(DiscoveredNode n) {
+                System.out.println("+ " + n.role() + " " + n.zid()
+                        + " at " + n.bestLocator());
+            }
+            @Override public void onExpire(DiscoveredNode n) {
+                System.out.println("- " + n.zid() + " gone");
+            }
+        })
+        .build();
+scout.start();
+```
+
+All defaults: active mode, 3-second SCOUT interval, 15-second stale
+timeout, any role, `224.0.0.224:7446`, every up + multicast-capable
+NIC. `onDiscover` fires the first time each ZID is seen; `onUpdate`
+fires on later HELLOs from a known ZID; `onExpire` fires after
+`staleTimeoutMillis` with no HELLO.
+
+### 10. Scout: passive listen-only, routers only
+
+```java
+PureJavaZenohScout scout = PureJavaZenohScout.builder()
+        .mode(PureJavaZenohScout.Mode.PASSIVE)
+        .role(WhatAmI.ROUTER)                      // filter
+        .listener(listener)
+        .build();
+scout.start();
+```
+
+Emits nothing on the wire. Only hears nodes that auto-advertise on
+their own via periodic multicast HELLO. The role filter drops HELLOs
+from peers and clients before the listener sees them.
+
+### 11. Scout: bind to a specific NIC (VPN)
+
+```java
+PureJavaZenohScout scout = PureJavaZenohScout.builder()
+        .networkInterface("wg0")                   // WireGuard interface
+        .scoutIntervalMillis(1_000)                // aggressive
+        .staleTimeoutMillis(5_000)                 // tight eviction
+        .listener(listener)
+        .build();
+scout.start();
+```
+
+Useful when the box has multiple NICs and you only want to scout the
+VPN subnet, not the LAN. Also handy on single-host tests where the
+router is on `wg0` / `utun0` so scout and router share a NIC that
+actually carries multicast.
+
+### 12. Scout: snapshot pull-API alongside callbacks
+
+```java
+PureJavaZenohScout scout = PureJavaZenohScout.builder()
+        .listener(liveListener)                    // real-time stream
+        .build();
+scout.start();
+
+// Any time later, from any thread, ask "what do you currently know?"
+for (DiscoveredNode n : scout.snapshot()) {
+    System.out.println(n.role() + " " + n.zid() + " " + n.locators());
+}
+
+// Point lookup by ZID
+Optional<DiscoveredNode> node = scout.get(someZid);
+
+// Force one SCOUT out immediately, ignoring the interval
+scout.scoutNow();
+```
+
+Callbacks and `snapshot()` are always both available on the same
+scout instance — use whichever fits your UI model, or use both.
+
 ---
 
 ## Publisher API: beyond `start()` / `publish()`
@@ -332,10 +447,56 @@ try (PureJavaZenohSubscriber.TopicDiscovery td =
 
 ---
 
+## Scout API: beyond `start()`
+
+Once `scout.start()` has returned, the useful surface is small:
+
+| Method                                  | Purpose |
+|-----------------------------------------|---------|
+| `snapshot()`                            | Immutable list of the current registry, ordered by `firstSeen`. Safe from any thread. |
+| `get(ZenohId)`                          | `Optional<DiscoveredNode>` point-lookup by ZID. |
+| `scoutNow()`                            | Emit one SCOUT immediately, regardless of mode/interval. No-op if not started. |
+| `addListener(ScoutListener)`            | Attach another listener at runtime. Multiple listeners get each event in registration order. |
+| `removeListener(ScoutListener)`         | Detach a listener. |
+| `scoutsSent()` / `hellosParsed()` / `hellosMalformed()` | Counters for smoke-tests / health checks. `malformed` should stay `0` against any spec-compliant router. |
+| `mode()`                                | Current mode (immutable after `build()`). |
+| `close()`                               | Idempotent shutdown: stops the scheduler, closes each socket, joins the reader threads. |
+
+### DiscoveredNode fields
+
+A `DiscoveredNode` is an immutable record; every listener callback and
+every `snapshot()` entry gives you the same shape:
+
+| Field              | Type                 | Notes |
+|--------------------|----------------------|-------|
+| `zid()`            | `ZenohId`            | The registry key. Two nodes with the same ZID are the same node. |
+| `role()`           | `WhatAmI`            | `ROUTER`, `PEER`, or `CLIENT`. |
+| `locators()`       | `List<String>`       | Endpoint strings like `tcp/host:7447`. Empty if the HELLO had L=0 (source address is the implicit locator). |
+| `source()`         | `InetSocketAddress`  | UDP source the HELLO arrived from. |
+| `protocolVersion()`| `int`                | Zenoh protocol version byte from the HELLO (currently `0x09`). |
+| `firstSeen()`      | `Instant`            | Preserved across updates. |
+| `lastSeen()`       | `Instant`            | Refreshed on every HELLO. |
+| `bestLocator()`    | `String`             | First explicit locator, or a synthesised `tcp/<source-host>:7447` fallback. Handy for feeding straight into `PureJavaZenohPublisher.connectEndpoint(...)`. |
+
+### Multicast gotchas
+
+- **127.0.0.1 does NOT carry multicast on any OS.** The scout skips
+  loopback automatically. On a single-host setup put both the router
+  and the scout on the same real NIC or VPN.
+- **Windows**: allow inbound UDP on `java.exe`; network profile must
+  be Private, not Public.
+- **Containers**: K8s pods with /32 netmasks and hardened bastions
+  often refuse IGMP entirely. If every NIC join fails, the scout
+  throws `no multicast-capable network interfaces found`; there is
+  nothing to do inside the JVM. Run on the host or attach a real /
+  bridged NIC.
+
+---
+
 ## Threading
 
-Both client classes are safe to share across threads once `start()` has
-returned:
+All three client classes are safe to share across threads once `start()`
+has returned:
 
 - `publish(...)`: safe from any thread.
 - `subscribe(...)`: safe from any thread; each returned `Subscription`
@@ -345,6 +506,11 @@ returned:
   same queue and each sample only goes to one of them.
 - `Subscription.forEach(...)`: starts an internal daemon thread; do
   not block inside the callback (back-pressures the inbound queue).
+- `scout.snapshot()` / `scout.get(...)`: safe from any thread.
+- `ScoutListener` callbacks: fire on the scout's reader threads
+  (one per NIC) under the registry lock. Per-ZID event order is
+  guaranteed. Do not block inside the callback — hand off to an
+  executor for long work.
 - `close()` / `stop()`: safe to call from any thread, and safe to call
   more than once (extra calls are no-ops).
 
@@ -362,6 +528,11 @@ returned:
 | `for PKCS12 client keystore, set clientCertPath and clientKeyPath to the SAME .p12 file` | Point both at the one `.p12` (or leave one empty). |
 | `PEM client authentication requires BOTH clientCertPath AND clientKeyPath`      | You gave a `.pem` cert without the matching `.key`. |
 | `PureJavaZenohPublisher is not started`                                         | Called `publish` before `start()`, or after `stop()`. |
+| `PureJavaZenohScout.start(): no multicast-capable network interfaces found`     | No suitable NIC on this host. Loopback is skipped because it does not carry multicast. Run on the host, attach a real / bridged NIC, or explicitly set `.networkInterface(...)`. |
+| `PureJavaZenohScout.start(): could not join multicast group on any interface`   | Every NIC join failed. Common causes: K8s pod with /32 netmask; container with IGMP blocked; Windows firewall dropping UDP `7446`. Not fixable inside the JVM. |
+| `scoutIntervalMillis must be >= 250`                                            | Below the minimum sanity floor for SCOUT emit rate. Raise the value. |
+| `staleTimeoutMillis must be >= 500`                                             | Below the minimum sanity floor for stale-eviction. Raise the value. |
+| `WhatAmIMatcher: at least one role bit must be set`                             | Empty role set. Pass at least one of `router` / `peer` / `client`, or use `WhatAmIMatcher.any()`. |
 
 ---
 
@@ -395,8 +566,10 @@ instead.
 **Transports not supported:**
 - **QUIC** (`quic/`, `quic://`): official Zenoh supports QUIC as a
   first-class transport; this client does not.
-- **UDP unicast / multicast**: the official client can peer over UDP
-  and multicast; this client is TCP/TLS/WS/WSS only.
+- **UDP unicast session transport**: the official client can peer
+  over UDP for the session data plane; this client is TCP/TLS/WS/WSS
+  only for sessions. UDP multicast IS used, but only by
+  `PureJavaZenohScout` for the SCOUT / HELLO discovery control plane.
 - **Unix domain sockets** (`unixsock-stream/...`).
 - **Serial / VSOCK** and other exotic transports the Rust client
   exposes via feature flags.
@@ -404,8 +577,11 @@ instead.
 **Zenoh features not implemented:**
 - **Peer mode**: this client only speaks Zenoh **client** mode
   (connects to a router). It cannot act as a peer or a router itself.
-- **Multicast discovery / scouting**: no gossip discovery; you must
-  point `connectEndpoint` at a known router.
+  The scout is a passive multicast observer, not a peer — it never
+  joins the mesh as a session.
+- **Gossip discovery**: `PureJavaZenohScout` decodes direct multicast
+  HELLOs only; it does not parse peer-to-peer gossip about other
+  peers. For a full mesh view use the JNI sibling.
 - **Queryables and `get()` queries**: you can publish and subscribe,
   but you cannot serve or issue Zenoh queries.
 - **Liveliness tokens**: declare / undeclare liveliness is not
@@ -440,7 +616,9 @@ instead.
 | mTLS with PEM or PKCS12                         | ✅          | ✅             |
 | Any-JDK-17 platform (Apple Silicon, ARM, etc.)  | ✅          | ⚠ x86_64 only |
 | Zero native binaries / accreditable source-only | ✅          | ❌             |
-| QUIC / UDP / multicast                          | ❌          | ✅             |
+| Multicast SCOUT / HELLO node discovery          | ✅          | ✅             |
+| Peer / gossip discovery                         | ❌          | ✅             |
+| QUIC / UDP session transport                    | ❌          | ✅             |
 | Peer or router mode                             | ❌          | ✅             |
 | Queryables + get queries                        | ❌          | ✅             |
 | Storage / replication                           | ❌          | ✅             |
