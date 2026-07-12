@@ -1,0 +1,7 @@
+io.mdudel.zenoh.purejava
+io.mdudel.zenoh.purejava.scouting
+io.mdudel.zenoh.purejava.session
+io.mdudel.zenoh.purejava.transport
+io.mdudel.zenoh.purejava.wire
+io.mdudel.zenoh.purejava.wire.messages
+sample.nb.ant.zenoh
