@@ -1,0 +1,93 @@
+name: Javadoc HTML
+
+# Regenerates the HTML Javadoc for this repo on every push to main and
+# publishes it to the gh-pages branch. GitHub Pages then serves it at
+# https://mdudel.github.io/simple-zenoh-java-client/
+#
+# ONE-TIME SETUP (per repo, after this workflow lands):
+#   Settings -> Pages -> Source: "Deploy from a branch"
+#                                Branch: gh-pages   Folder: / (root)
+#   Settings -> Actions -> General -> Workflow permissions:
+#                                Read and write permissions
+#
+# After that, every push to main rebuilds the docs; ~30-60 s per run.
+#
+# Note: this project uses the NetBeans-generated Ant harness locally,
+# but the harness assumes an IDE-supplied ${platform.active} property
+# that isn't set on a fresh CI runner. Rather than mock that in, we
+# invoke the `javadoc` CLI directly on src/**/*.java - same tool the
+# `ant javadoc` target ultimately runs, one fewer moving part.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: javadoc-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate Javadoc
+        run: |
+          set -eu
+          rm -rf public
+          mkdir -p public
+
+          # Two package trees to document:
+          #   io.mdudel.zenoh.purejava.*  - the pure-Java client
+          #   sample.nb.ant.zenoh.*        - the runnable Pub/Sub/Scout samples
+          # javadoc will discover the package structure from the -sourcepath
+          # + explicit -subpackages, so no manual file list needed.
+          #
+          # -Xdoclint:none avoids sinking the build on legacy @link refs to
+          # renamed classes (harmless warnings, present in a couple of
+          # message classes ported from the sibling repo).
+          #
+          # -encoding UTF-8 matches nbproject/project.properties
+          # source.encoding=UTF-8; the sandbox has bitten us on this before.
+          javadoc \
+              -d public \
+              -sourcepath src \
+              -subpackages io.mdudel.zenoh.purejava:sample.nb.ant.zenoh \
+              -encoding UTF-8 \
+              -docencoding UTF-8 \
+              -charset UTF-8 \
+              -Xdoclint:none \
+              -quiet \
+              -windowtitle "simple-zenoh-java-client API" \
+              -doctitle "simple-zenoh-java-client &mdash; pure-Java Zenoh 1.x client" \
+              -header "<b>simple-zenoh-java-client</b>" \
+              -bottom "<em>Rebuilt from commit ${GITHUB_SHA:0:7} at $(date -u +'%Y-%m-%d %H:%M UTC')</em>"
+
+          # .nojekyll tells GitHub Pages "serve this verbatim, don't run
+          # Jekyll over it" - Javadoc's leading-underscore files (e.g.
+          # some layouts' _index.html) would otherwise be dropped.
+          touch public/.nojekyll
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
+          force_orphan: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'docs(javadoc): rebuild from ${{ github.sha }}'

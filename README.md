@@ -10,6 +10,17 @@ routers and peers).
 For the full list of builder options (TLS, mTLS, PEM/PKCS12 certs,
 WebSocket, hostname verification, scout modes, etc.) see [API.md](API.md).
 
+## API docs
+
+HTML Javadoc is regenerated on every push to `main` and published to
+GitHub Pages:
+
+- **API reference**: https://mdudel.github.io/simple-zenoh-java-client/
+
+Covers both `io.mdudel.zenoh.purejava.*` (the client) and
+`sample.nb.ant.zenoh.*` (the runnable samples). The generator is
+[.github/workflows/javadoc.yml](.github/workflows/javadoc.yml).
+
 ## Layout
 
 ```
