@@ -29,67 +29,73 @@ import java.util.regex.Pattern;
 /**
  * PEM parser for X.509 certificates and PKCS#8 private keys.
  *
- * <p>Deliberately narrow: this class handles the PEM formats that
- * {@code openssl req} + {@code openssl pkcs8} + Zenoh's PEM samples
- * emit, and rejects everything else with a helpful error message.
- * It does <b>not</b> pull in Bouncy Castle or {@code sun.security.*};
- * everything is JDK stdlib.</p>
+ * <p>
+ * Deliberately narrow: this class handles the PEM formats that
+ * {@code openssl req} + {@code openssl pkcs8} + Zenoh's PEM samples emit, and
+ * rejects everything else with a helpful error message. It does <b>not</b> pull
+ * in Bouncy Castle or {@code sun.security.*}; everything is JDK stdlib.</p>
  *
  * <h2>Supported certificate PEM</h2>
  * <ul>
- *   <li>{@code -----BEGIN CERTIFICATE-----} / {@code -----END CERTIFICATE-----}
- *       blocks. Multiple concatenated blocks in one file are supported;
- *       useful for leaf + intermediate chains.</li>
+ * <li>{@code -----BEGIN CERTIFICATE-----} / {@code -----END CERTIFICATE-----}
+ * blocks. Multiple concatenated blocks in one file are supported; useful for
+ * leaf + intermediate chains.</li>
  * </ul>
  *
  * <h2>Supported private-key PEM</h2>
  * <ul>
- *   <li>{@code -----BEGIN PRIVATE KEY-----} &mdash; PKCS#8 unencrypted.
- *       The modern format, what {@code openssl pkcs8 -topk8 -nocrypt}
- *       produces. Native handling via {@link PKCS8EncodedKeySpec}.</li>
- *   <li>{@code -----BEGIN RSA PRIVATE KEY-----} &mdash; PKCS#1 traditional
- *       RSA. What older {@code openssl req} still emits by default. This
- *       loader wraps it in a minimal PKCS#8 envelope in memory before
- *       decoding, so users don't need to run
- *       {@code openssl pkcs8 -topk8 -nocrypt} first.</li>
- *   <li>{@code -----BEGIN EC PRIVATE KEY-----} &mdash; PKCS#1-style EC.
- *       Same wrap-in-PKCS#8 treatment.</li>
+ * <li>{@code -----BEGIN PRIVATE KEY-----} &mdash; PKCS#8 unencrypted. The
+ * modern format, what {@code openssl pkcs8 -topk8 -nocrypt} produces. Native
+ * handling via {@link PKCS8EncodedKeySpec}.</li>
+ * <li>{@code -----BEGIN RSA PRIVATE KEY-----} &mdash; PKCS#1 traditional RSA.
+ * What older {@code openssl req} still emits by default. This loader wraps it
+ * in a minimal PKCS#8 envelope in memory before decoding, so users don't need
+ * to run {@code openssl pkcs8 -topk8 -nocrypt} first.</li>
+ * <li>{@code -----BEGIN EC PRIVATE KEY-----} &mdash; PKCS#1-style EC. Same
+ * wrap-in-PKCS#8 treatment.</li>
  * </ul>
  *
  * <h2>Not supported (documented, will throw)</h2>
  * <ul>
- *   <li>{@code -----BEGIN ENCRYPTED PRIVATE KEY-----} &mdash; encrypted
- *       PKCS#8 keys. Users should convert with
- *       {@code openssl pkcs8 -topk8 -nocrypt} first, or use PKCS12
- *       keystores which handle passwords natively.</li>
+ * <li>{@code -----BEGIN ENCRYPTED PRIVATE KEY-----} &mdash; encrypted PKCS#8
+ * keys. Users should convert with {@code openssl pkcs8 -topk8 -nocrypt} first,
+ * or use PKCS12 keystores which handle passwords natively.</li>
  * </ul>
  */
-final class PemLoader {
+public final class PemLoader {
 
     private static final Pattern PEM_BLOCK = Pattern.compile(
             "-----BEGIN ([A-Z0-9 ]+)-----\\s*([A-Za-z0-9+/=\\s]+?)-----END \\1-----",
             Pattern.DOTALL);
 
-    private PemLoader() {}
+    private PemLoader() {
+    }
 
     /**
      * Read all {@code -----BEGIN CERTIFICATE-----} blocks from a PEM file and
      * decode each into an {@link X509Certificate}. Throws if the file contains
      * no certificate blocks or any block fails to decode.
+     *
+     * @param pemPath
+     * @return
+     * @throws java.io.IOException
      */
-    static List<X509Certificate> readCertificates(Path pemPath) throws IOException {
+    public static List<X509Certificate> readCertificates(Path pemPath) throws IOException {
         Objects.requireNonNull(pemPath, "pemPath");
         String text = Files.readString(pemPath, StandardCharsets.US_ASCII);
         List<X509Certificate> out = new ArrayList<>();
         Matcher m = PEM_BLOCK.matcher(text);
         CertificateFactory cf;
-        try { cf = CertificateFactory.getInstance("X.509"); }
-        catch (CertificateException e) {
+        try {
+            cf = CertificateFactory.getInstance("X.509");
+        } catch (CertificateException e) {
             throw new IOException("X.509 CertificateFactory unavailable: " + e.getMessage(), e);
         }
         while (m.find()) {
             String label = m.group(1).trim();
-            if (!"CERTIFICATE".equals(label)) continue;
+            if (!"CERTIFICATE".equals(label)) {
+                continue;
+            }
             byte[] der = decodeBase64Body(m.group(2));
             try {
                 X509Certificate cert = (X509Certificate) cf.generateCertificate(
@@ -108,48 +114,53 @@ final class PemLoader {
     }
 
     /**
-     * Read a single private-key PEM block and decode it into a {@link PrivateKey}.
-     * Supports {@code PRIVATE KEY} (PKCS#8 unencrypted), {@code RSA PRIVATE KEY}
-     * (PKCS#1, auto-wrapped in PKCS#8), and {@code EC PRIVATE KEY} (same).
+     * Read a single private-key PEM block and decode it into a
+     * {@link PrivateKey}. Supports {@code PRIVATE KEY} (PKCS#8 unencrypted),
+     * {@code RSA PRIVATE KEY} (PKCS#1, auto-wrapped in PKCS#8), and
+     * {@code EC PRIVATE KEY} (same).
      */
-    static PrivateKey readPrivateKey(Path pemPath) throws IOException {
+    public static PrivateKey readPrivateKey(Path pemPath) throws IOException {
         Objects.requireNonNull(pemPath, "pemPath");
         String text = Files.readString(pemPath, StandardCharsets.US_ASCII);
         Matcher m = PEM_BLOCK.matcher(text);
         while (m.find()) {
             String label = m.group(1).trim();
             byte[] der = decodeBase64Body(m.group(2));
-            return switch (label) {
-                case "PRIVATE KEY" -> decodePkcs8(der, "RSA-then-EC", pemPath);
-                case "RSA PRIVATE KEY" -> decodePkcs8(wrapPkcs1AsPkcs8(der, RSA_OID), "RSA", pemPath);
-                case "EC PRIVATE KEY"  -> decodePkcs8(wrapPkcs1AsPkcs8(der, EC_OID),  "EC",  pemPath);
-                case "ENCRYPTED PRIVATE KEY" -> throw new IOException(
-                        "encrypted PKCS#8 keys are not supported; convert with "
-                                + "'openssl pkcs8 -topk8 -nocrypt -in in.pem -out out.pem' "
-                                + "or use a PKCS12 keystore. File: " + pemPath);
-                default -> {
-                    // Not a key block; keep scanning.
-                    if (!m.find()) yield null;
+            PrivateKey key = switch (label) {
+                case "PRIVATE KEY" ->
+                    decodePkcs8(der, "RSA-then-EC", pemPath);
+                case "RSA PRIVATE KEY" ->
+                    decodePkcs8(wrapPkcs1AsPkcs8(der, RSA_OID), "RSA", pemPath);
+                case "EC PRIVATE KEY" ->
+                    decodePkcs8(wrapPkcs1AsPkcs8(der, ecAlgorithmIdentifier(der)), "EC", pemPath);
+                case "ENCRYPTED PRIVATE KEY" ->
                     throw new IOException(
-                            "unrecognised PEM label '" + label + "' in " + pemPath);
-                }
+                            "encrypted PKCS#8 keys are not supported; convert with "
+                            + "'openssl pkcs8 -topk8 -nocrypt -in in.pem -out out.pem' "
+                            + "or use a PKCS12 keystore. File: " + pemPath);
+                default -> null;
             };
+            if (key != null) return key;
         }
         throw new IOException("no PRIVATE KEY PEM block found in " + pemPath);
     }
 
     // ---- internals ----------------------------------------------------
-
-    /** OID for rsaEncryption (1.2.840.113549.1.1.1), DER-encoded AlgorithmIdentifier prefix bytes. */
-    private static final byte[] RSA_OID = new byte[] {
-            0x30, 0x0d,
-            0x06, 0x09, 0x2a, (byte) 0x86, 0x48, (byte) 0x86, (byte) 0xf7, 0x0d, 0x01, 0x01, 0x01,
-            0x05, 0x00
+    /**
+     * OID for rsaEncryption (1.2.840.113549.1.1.1), DER-encoded
+     * AlgorithmIdentifier prefix bytes.
+     */
+    private static final byte[] RSA_OID = new byte[]{
+        0x30, 0x0d,
+        0x06, 0x09, 0x2a, (byte) 0x86, 0x48, (byte) 0x86, (byte) 0xf7, 0x0d, 0x01, 0x01, 0x01,
+        0x05, 0x00
     };
-    /** OID for id-ecPublicKey (1.2.840.10045.2.1). Fixed prefix; the curve OID lives in the PKCS#1 body. */
-    private static final byte[] EC_OID = new byte[] {
-            0x30, 0x0b,
-            0x06, 0x07, 0x2a, (byte) 0x86, 0x48, (byte) 0xce, 0x3d, 0x02, 0x01
+    /**
+     * OID for id-ecPublicKey (1.2.840.10045.2.1). Fixed prefix; the curve OID
+     * lives in the PKCS#1 body.
+     */
+    private static final byte[] EC_PUBLIC_KEY_OID = new byte[]{
+        0x06, 0x07, 0x2a, (byte) 0x86, 0x48, (byte) 0xce, 0x3d, 0x02, 0x01
     };
 
     private static byte[] decodeBase64Body(String body) {
@@ -162,9 +173,12 @@ final class PemLoader {
         // knows the algorithm (RSA / EC paths above), respect the hint.
         PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(der);
         String[] algs = switch (algHint) {
-            case "RSA" -> new String[] { "RSA" };
-            case "EC"  -> new String[] { "EC"  };
-            default    -> new String[] { "RSA", "EC" };  // PKCS#8 self-identifies; either factory reads it
+            case "RSA" ->
+                new String[]{"RSA"};
+            case "EC" ->
+                new String[]{"EC"};
+            default ->
+                new String[]{"RSA", "EC", "Ed25519", "Ed448", "DSA"};
         };
         Exception last = null;
         for (String alg : algs) {
@@ -176,15 +190,16 @@ final class PemLoader {
         }
         throw new IOException(
                 "failed to decode private key in " + source + " as any of "
-                        + java.util.Arrays.toString(algs)
-                        + ": " + (last == null ? "unknown" : last.getMessage()), last);
+                + java.util.Arrays.toString(algs)
+                + ": " + (last == null ? "unknown" : last.getMessage()), last);
     }
 
     /**
      * Wrap a raw PKCS#1 DER key body in a minimal PKCS#8 envelope so
      * {@link PKCS8EncodedKeySpec} + {@link KeyFactory} can decode it.
      *
-     * <p>Layout emitted:</p>
+     * <p>
+     * Layout emitted:</p>
      * <pre>
      * SEQUENCE {
      *   INTEGER 0,                   -- version
@@ -197,7 +212,7 @@ final class PemLoader {
         try {
             java.io.ByteArrayOutputStream inner = new java.io.ByteArrayOutputStream();
             // version INTEGER 0
-            inner.write(new byte[] { 0x02, 0x01, 0x00 });
+            inner.write(new byte[]{0x02, 0x01, 0x00});
             // algorithm AlgorithmIdentifier
             inner.write(algOid);
             // privateKey OCTET STRING containing the PKCS#1 body
@@ -208,6 +223,60 @@ final class PemLoader {
             return outer.toByteArray();
         } catch (IOException e) {
             throw new IOException("PKCS#1->PKCS#8 wrap failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** Build an EC AlgorithmIdentifier with the curve parameters from SEC1 [0]. */
+    private static byte[] ecAlgorithmIdentifier(byte[] sec1Der) throws IOException {
+        DerReader outer = new DerReader(sec1Der);
+        DerReader sequence = new DerReader(outer.readValue(0x30));
+        sequence.readValue(0x02);
+        sequence.readValue(0x04);
+        while (sequence.hasRemaining()) {
+            int tag = sequence.peekTag();
+            byte[] value = sequence.readValue(tag);
+            if (tag == 0xA0) {
+                java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+                body.write(EC_PUBLIC_KEY_OID);
+                body.write(value);
+                java.io.ByteArrayOutputStream result = new java.io.ByteArrayOutputStream();
+                writeDerTag(result, (byte) 0x30, body.toByteArray());
+                return result.toByteArray();
+            }
+        }
+        throw new IOException("EC PRIVATE KEY has no curve parameters; use a named-curve SEC1 key or convert it to PKCS#8");
+    }
+
+    private static final class DerReader {
+        private final byte[] data;
+        private int position;
+        DerReader(byte[] data) { this.data = data; }
+        boolean hasRemaining() { return position < data.length; }
+        int peekTag() throws IOException {
+            if (!hasRemaining()) throw new IOException("truncated DER value");
+            return data[position] & 0xFF;
+        }
+        byte[] readValue(int expectedTag) throws IOException {
+            int actualTag = readByte();
+            if (actualTag != expectedTag) throw new IOException(String.format(
+                    "invalid DER: expected tag 0x%02x, found 0x%02x", expectedTag, actualTag));
+            int firstLength = readByte();
+            int length;
+            if ((firstLength & 0x80) == 0) length = firstLength;
+            else {
+                int count = firstLength & 0x7F;
+                if (count == 0 || count > 4) throw new IOException("invalid DER length");
+                length = 0;
+                for (int i = 0; i < count; i++) length = (length << 8) | readByte();
+            }
+            if (length < 0 || length > data.length - position) throw new IOException("truncated DER value");
+            byte[] value = java.util.Arrays.copyOfRange(data, position, position + length);
+            position += length;
+            return value;
+        }
+        private int readByte() throws IOException {
+            if (!hasRemaining()) throw new IOException("truncated DER value");
+            return data[position++] & 0xFF;
         }
     }
 
@@ -226,7 +295,7 @@ final class PemLoader {
         } else if (len <= 0xFFFFFF) {
             out.write(0x83);
             out.write((len >>> 16) & 0xFF);
-            out.write((len >>> 8)  & 0xFF);
+            out.write((len >>> 8) & 0xFF);
             out.write(len & 0xFF);
         } else {
             throw new IOException("DER length too large: " + len);
