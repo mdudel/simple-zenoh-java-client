@@ -92,7 +92,11 @@ public record Declare(
 
     /** Parse a Declare from bytes. */
     public static Declare decode(byte[] data) {
-        RBuf r = new RBuf(data);
+        return decode(new RBuf(data));
+    }
+
+    /** Decode one DECLARE from a shared frame cursor. */
+    public static Declare decode(RBuf r) {
         int header = r.u8();
         int id = header & 0x1F;
         if (id != ID) {
@@ -117,40 +121,50 @@ public record Declare(
      */
     public static final class Body {
 
-        public enum BodyKind { DECLARE_SUBSCRIBER, UNDECLARE_SUBSCRIBER, RAW }
+        public enum BodyKind { DECLARE_KEY_EXPR, UNDECLARE_KEY_EXPR, DECLARE_SUBSCRIBER, UNDECLARE_SUBSCRIBER, RAW }
 
         private final BodyKind             kind;
+        private final DeclareKeyExpr       declareKeyExpr;
+        private final UndeclareKeyExpr     undeclareKeyExpr;
         private final DeclareSubscriber    declareSubscriber;
         private final UndeclareSubscriber  undeclareSubscriber;
         private final byte[]               rawBytes;    // header byte + body, for RAW
 
-        private Body(BodyKind kind,
+        private Body(BodyKind kind, DeclareKeyExpr dk, UndeclareKeyExpr uk,
                      DeclareSubscriber ds,
                      UndeclareSubscriber us,
                      byte[] raw) {
             this.kind = kind;
+            this.declareKeyExpr = dk;
+            this.undeclareKeyExpr = uk;
             this.declareSubscriber = ds;
             this.undeclareSubscriber = us;
             this.rawBytes = raw == null ? null : raw.clone();
         }
 
-        public static Body of(DeclareSubscriber   ds) { return new Body(BodyKind.DECLARE_SUBSCRIBER,   ds, null, null); }
-        public static Body of(UndeclareSubscriber us) { return new Body(BodyKind.UNDECLARE_SUBSCRIBER, null, us, null); }
+        public static Body of(DeclareKeyExpr dk) { return new Body(BodyKind.DECLARE_KEY_EXPR, dk, null, null, null, null); }
+        public static Body of(UndeclareKeyExpr uk) { return new Body(BodyKind.UNDECLARE_KEY_EXPR, null, uk, null, null, null); }
+        public static Body of(DeclareSubscriber ds) { return new Body(BodyKind.DECLARE_SUBSCRIBER, null, null, ds, null, null); }
+        public static Body of(UndeclareSubscriber us) { return new Body(BodyKind.UNDECLARE_SUBSCRIBER, null, null, null, us, null); }
         /** Build a RAW body from the FULL sub-message bytes (header byte first). */
         public static Body ofRaw(byte[] fullBodyBytes) {
             if (fullBodyBytes == null || fullBodyBytes.length == 0) {
                 throw new IllegalArgumentException("raw body must be non-empty");
             }
-            return new Body(BodyKind.RAW, null, null, fullBodyBytes);
+            return new Body(BodyKind.RAW, null, null, null, null, fullBodyBytes);
         }
 
         public BodyKind             kind()                { return kind; }
+        public DeclareKeyExpr       asDeclareKeyExpr()    { return declareKeyExpr; }
+        public UndeclareKeyExpr     asUndeclareKeyExpr()  { return undeclareKeyExpr; }
         public DeclareSubscriber    asDeclareSubscriber() { return declareSubscriber; }
         public UndeclareSubscriber  asUndeclareSubscriber(){ return undeclareSubscriber; }
         public byte[]               rawBytes()            { return rawBytes == null ? null : rawBytes.clone(); }
 
         void encode(WBuf w) {
             switch (kind) {
+                case DECLARE_KEY_EXPR     -> declareKeyExpr.encode(w);
+                case UNDECLARE_KEY_EXPR   -> undeclareKeyExpr.encode(w);
                 case DECLARE_SUBSCRIBER   -> declareSubscriber.encode(w);
                 case UNDECLARE_SUBSCRIBER -> undeclareSubscriber.encode(w);
                 case RAW                  -> w.bytes(rawBytes);
@@ -161,6 +175,8 @@ public record Declare(
             int header = r.u8();
             int subId = header & 0x1F;
             return switch (subId) {
+                case DeclareKeyExpr.ID     -> of(DeclareKeyExpr.decode(header, r));
+                case UndeclareKeyExpr.ID   -> of(UndeclareKeyExpr.decode(header, r));
                 case DeclareSubscriber.ID  -> of(DeclareSubscriber.decode(header, r));
                 case UndeclareSubscriber.ID -> of(UndeclareSubscriber.decode(header, r));
                 default -> {
@@ -179,6 +195,8 @@ public record Declare(
 
         @Override public String toString() {
             return switch (kind) {
+                case DECLARE_KEY_EXPR     -> "Body{" + declareKeyExpr + "}";
+                case UNDECLARE_KEY_EXPR   -> "Body{" + undeclareKeyExpr + "}";
                 case DECLARE_SUBSCRIBER   -> "Body{" + declareSubscriber   + "}";
                 case UNDECLARE_SUBSCRIBER -> "Body{" + undeclareSubscriber + "}";
                 case RAW                  -> "Body{RAW(" + rawBytes.length + "B)}";

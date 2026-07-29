@@ -180,8 +180,10 @@ public final class TlsConfig {
          * or a concatenated chain (leaf first, then intermediates).
          * {@code privateKeyPem} may be PKCS#8
          * ({@code -----BEGIN PRIVATE KEY-----}, the modern format) or
-         * PKCS#1 ({@code -----BEGIN RSA PRIVATE KEY-----}, the legacy
-         * format {@code openssl req} still emits by default). Encrypted
+         * traditional RSA ({@code -----BEGIN RSA PRIVATE KEY-----}) or
+         * SEC1 EC ({@code -----BEGIN EC PRIVATE KEY-----}). PKCS#8 keys may
+         * use RSA, EC, Ed25519, Ed448, or DSA when supported by the JDK.
+         * Encrypted
          * PKCS#8 is not supported &mdash; convert with
          * {@code openssl pkcs8 -topk8 -nocrypt} first, or use a PKCS12
          * keystore which handles passwords natively.</p>

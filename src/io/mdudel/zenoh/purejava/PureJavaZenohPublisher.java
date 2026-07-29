@@ -21,6 +21,7 @@ import io.mdudel.zenoh.purejava.transport.TlsTransport;
 import io.mdudel.zenoh.purejava.transport.Transport;
 import io.mdudel.zenoh.purejava.transport.WsTransport;
 import io.mdudel.zenoh.purejava.wire.KeyExpr;
+import java.io.File;
 
 import java.io.IOException;
 import java.lang.System.Logger;
@@ -28,7 +29,6 @@ import java.lang.System.Logger.Level;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -331,7 +331,7 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
     }
 
     private static Path requireReadable(String pathStr, String argName) throws IOException {
-        Path p = Paths.get(pathStr);
+        Path p = new File(pathStr).toPath();
         if (!Files.isReadable(p)) {
             throw new IOException(argName + " not readable: " + pathStr);
         }

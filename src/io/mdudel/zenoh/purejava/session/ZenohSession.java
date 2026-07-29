@@ -9,9 +9,12 @@ import io.mdudel.zenoh.purejava.transport.Transport;
 import io.mdudel.zenoh.purejava.transport.TransportException;
 import io.mdudel.zenoh.purejava.wire.Encoding;
 import io.mdudel.zenoh.purejava.wire.KeyExpr;
+import io.mdudel.zenoh.purejava.wire.Extension;
+import io.mdudel.zenoh.purejava.wire.RBuf;
 import io.mdudel.zenoh.purejava.wire.ZenohId;
 import io.mdudel.zenoh.purejava.wire.messages.Close;
 import io.mdudel.zenoh.purejava.wire.messages.Declare;
+import io.mdudel.zenoh.purejava.wire.messages.DeclareKeyExpr;
 import io.mdudel.zenoh.purejava.wire.messages.DeclareSubscriber;
 import io.mdudel.zenoh.purejava.wire.messages.Frame;
 import io.mdudel.zenoh.purejava.wire.messages.Init;
@@ -21,6 +24,7 @@ import io.mdudel.zenoh.purejava.wire.messages.Open;
 import io.mdudel.zenoh.purejava.wire.messages.Push;
 import io.mdudel.zenoh.purejava.wire.messages.Put;
 import io.mdudel.zenoh.purejava.wire.messages.UndeclareSubscriber;
+import io.mdudel.zenoh.purejava.wire.messages.UndeclareKeyExpr;
 
 import java.util.function.Consumer;
 
@@ -97,6 +101,8 @@ public final class ZenohSession implements AutoCloseable {
     private final int       handshakeTimeoutMs;
     private final int       closeTimeoutMs;
     private final boolean   autoConnect;
+    private final boolean   localRouting;
+    private final SessionAuthenticator authenticator;
 
     // ---- lifecycle state -------------------------------------------------
 
@@ -111,6 +117,8 @@ public final class ZenohSession implements AutoCloseable {
     private final java.util.concurrent.ConcurrentHashMap<Long, Subscription> subscriptions =
             new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.concurrent.ConcurrentHashMap<Long, DiscoveryListener> interests =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<Integer, String> remoteKeyExprs =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
@@ -147,6 +155,8 @@ public final class ZenohSession implements AutoCloseable {
         this.handshakeTimeoutMs = b.handshakeTimeoutMs;
         this.closeTimeoutMs     = b.closeTimeoutMs;
         this.autoConnect        = b.autoConnect;
+        this.localRouting       = b.localRouting;
+        this.authenticator      = b.authenticator;
     }
 
     public static Builder builder(Transport transport) {
@@ -190,7 +200,7 @@ public final class ZenohSession implements AutoCloseable {
                     WIRE_VERSION,
                     io.mdudel.zenoh.purejava.wire.WhatAmI.CLIENT,
                     localId,
-                    java.util.List.of());
+                    authenticator == null ? java.util.List.of() : authenticator.initSynExtensions());
             sendRaw(initSyn.encode());
 
             // 2. Server -> Client: InitAck
@@ -202,13 +212,14 @@ public final class ZenohSession implements AutoCloseable {
                 throw new SessionException("failed to decode InitAck: " + e.getMessage(), e);
             }
             this.remoteId = initAck.zid();
+            if (authenticator != null) authenticator.receiveInitAck(initAck.extensions());
 
             // 3. Client -> Server: OpenSyn (echo cookie)
             Open.OpenSyn openSyn = new Open.OpenSyn(
                     proposedLeaseMs,
                     /* initialSn = */ 0L,
                     initAck.cookie(),
-                    java.util.List.of());
+                    authenticator == null ? java.util.List.of() : authenticator.openSynExtensions());
             sendRaw(openSyn.encode());
 
             // 4. Server -> Client: OpenAck
@@ -220,6 +231,7 @@ public final class ZenohSession implements AutoCloseable {
                 throw new SessionException("failed to decode OpenAck: " + e.getMessage(), e);
             }
             this.negotiatedLeaseMs = openAck.leaseMillis();
+            if (authenticator != null) authenticator.receiveOpenAck(openAck.extensions());
 
             // Enter OPEN and spin up the periodic tasks + reader thread.
             state.set(SessionState.OPEN);
@@ -260,6 +272,9 @@ public final class ZenohSession implements AutoCloseable {
         long sn = outboundSn.getAndIncrement();
         Frame frame = Frame.ofPush(sn, /* reliable = */ true, push);
         sendRaw(frame.encode());
+        if (localRouting) {
+            routeLocalPublication(keyExpr, payload, encoding);
+        }
     }
 
     /** Publish a UTF-8 string with the standard string-encoding tag. */
@@ -556,29 +571,38 @@ public final class ZenohSession implements AutoCloseable {
      * messages (DECLARE, REQUEST, RESPONSE, OAM) are logged and dropped.
      */
     private void handleInboundFrame(byte[] batch) {
-        Frame frame;
+        RBuf frame;
         try {
-            frame = Frame.decode(batch);
+            frame = new RBuf(batch);
+            int header = frame.u8();
+            if ((header & 0x1F) != Frame.ID) throw new IllegalArgumentException("not a FRAME");
+            frame.varInt(); // sequence number
+            if ((header & Frame.FLAG_Z) != 0) Extension.readAll(frame);
         } catch (RuntimeException e) {
             LOG.log(Level.DEBUG, () -> "reader: FRAME decode failed: " + e.getMessage());
             return;
         }
-        // NB: no early return on empty subscriptions -- an INTEREST-driven
-        // DiscoveryListener can be interested in inbound DECLAREs even when
-        // no PUSH subscriptions are live.
-        byte[] payload = frame.payload();
-        if (payload.length == 0) return;
-        int msgId = payload[0] & 0x1F;
-        // For the MVP, one FRAME carries one network message. Real routers
-        // sometimes batch multiple in one FRAME; when we grow the codec
-        // to know how to length-slice PUSH, DECLARE, etc. we can loop here.
-        // Today: single-message per FRAME, no length probing needed.
-        switch (msgId) {
-            case Push.ID    -> tryDeliverPush(payload);
-            case Declare.ID -> tryDeliverDeclare(payload);
-            default -> LOG.log(Level.TRACE, () ->
-                    "reader: inbound network message id 0x" + Integer.toHexString(msgId)
-                            + " not routed (subscriber-side handles only PUSH + DECLARE today)");
+        while (frame.hasMore()) {
+            int before = frame.position();
+            int msgId = frame.peekU8() & 0x1F;
+            try {
+                switch (msgId) {
+                    case Push.ID    -> deliverPush(Push.decode(frame));
+                    case Declare.ID -> handleDeclare(Declare.decode(frame));
+                    default -> {
+                        LOG.log(Level.WARNING, "reader: unsupported network message id 0x{0}; remaining frame dropped",
+                                Integer.toHexString(msgId));
+                        return;
+                    }
+                }
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "reader: network message decode failed at frame offset {0}: {1}", before, e.getMessage());
+                return;
+            }
+            if (frame.position() <= before) {
+                LOG.log(Level.WARNING, "reader: decoder made no progress at frame offset {0}", before);
+                return;
+            }
         }
     }
 
@@ -599,6 +623,24 @@ public final class ZenohSession implements AutoCloseable {
             LOG.log(Level.DEBUG, () -> "reader: DECLARE decode failed: " + e.getMessage());
             return;
         }
+        handleDeclare(declare);
+    }
+
+    private void handleDeclare(Declare declare) {
+        if (declare.body().kind() == Declare.Body.BodyKind.DECLARE_KEY_EXPR) {
+            DeclareKeyExpr mapping = declare.body().asDeclareKeyExpr();
+            String key = resolveRemoteKey(mapping.keyScope(), mapping.keySuffix());
+            if (key == null) {
+                LOG.log(Level.WARNING, "reader: cannot resolve DeclareKeyExpr id={0}, scope={1}", mapping.id(), mapping.keyScope());
+            } else {
+                remoteKeyExprs.put((int) mapping.id(), key);
+                LOG.log(Level.DEBUG, "reader: remote key mapping {0} -> {1}", mapping.id(), key);
+            }
+        } else if (declare.body().kind() == Declare.Body.BodyKind.UNDECLARE_KEY_EXPR) {
+            UndeclareKeyExpr mapping = declare.body().asUndeclareKeyExpr();
+            remoteKeyExprs.remove((int) mapping.id());
+        }
+
         Long interestId = declare.interestId();
         if (interestId == null) {
             // Server-driven DECLARE not associated with any of our interests
@@ -635,13 +677,9 @@ public final class ZenohSession implements AutoCloseable {
 
     /** Turn one inbound PUSH into a {@link Sample} and route to matching subscriptions. */
     private void deliverPush(Push push) {
-        String key = push.keySuffix();
+        String key = resolveRemoteKey(push.keyScope(), push.keySuffix());
         if (key == null || key.isEmpty()) {
-            // MVP subscriber doesn't handle numeric-only key mappings
-            // (DeclareKeyExpr / DeclareToken tables); the publisher path
-            // always emits full suffixes so this only happens with a router
-            // that has declared an ID mapping and is using it. Log + drop.
-            LOG.log(Level.TRACE, () -> "reader: PUSH with no suffix; numeric mapping not supported");
+            LOG.log(Level.WARNING, "reader: PUSH uses unknown remote key mapping scope={0}; sample dropped", push.keyScope());
             return;
         }
         // Body is a PushBody -- for now we only decode Put (id 0x01).
@@ -672,6 +710,21 @@ public final class ZenohSession implements AutoCloseable {
                 "reader: PUSH key='" + key + "' routed to " + matchedFinal + " subscription(s)");
     }
 
+    private String resolveRemoteKey(int scope, String suffix) {
+        String tail = suffix == null ? "" : suffix;
+        if (scope == 0) return tail;
+        String prefix = remoteKeyExprs.get(scope);
+        return prefix == null ? null : prefix + tail;
+    }
+
+    /** Match a successful local publication against subscribers on this session. */
+    private void routeLocalPublication(String key, byte[] payload, Encoding encoding) {
+        Sample sample = Sample.bare(key, payload, encoding);
+        for (Subscription sub : subscriptions.values()) {
+            if (sub.keyExpr().matches(key)) sub.offer(sample);
+        }
+    }
+
     private void forceClosed() {
         cancelBackgroundTasks();
         transport.close();
@@ -687,6 +740,8 @@ public final class ZenohSession implements AutoCloseable {
         private       int       handshakeTimeoutMs  = DEFAULT_HANDSHAKE_MS;
         private       int       closeTimeoutMs      = DEFAULT_CLOSE_MS;
         private       boolean   autoConnect         = true;
+        private       boolean   localRouting        = true;
+        private       SessionAuthenticator authenticator;
 
         private Builder(Transport transport) {
             this.transport = Objects.requireNonNull(transport, "transport");
@@ -722,6 +777,18 @@ public final class ZenohSession implements AutoCloseable {
         /** When true (default), {@link #open()} calls {@link Transport#connect()} first if needed. */
         public Builder autoConnect(boolean on) {
             this.autoConnect = on;
+            return this;
+        }
+
+        /** Deliver publications to matching subscribers on this session. Enabled by default. */
+        public Builder localRouting(boolean on) {
+            this.localRouting = on;
+            return this;
+        }
+
+        /** Optional Zenoh INIT/OPEN transport authentication. */
+        public Builder authenticator(SessionAuthenticator value) {
+            this.authenticator = value;
             return this;
         }
 

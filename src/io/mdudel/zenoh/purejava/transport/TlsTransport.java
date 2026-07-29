@@ -8,53 +8,58 @@ package io.mdudel.zenoh.purejava.transport;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.Objects;
 
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 
 /**
- * TLS + optional mTLS implementation of {@link Transport} for the
- * Zenoh 1.x publisher.
+ * TLS + optional mTLS implementation of {@link Transport} for the Zenoh 1.x
+ * publisher.
  *
- * <p>Same 2-byte little-endian stream framing as {@link TcpTransport}
- * &mdash; TLS is just an encrypted, authenticated pipe under the same
- * wire protocol. All the reader-thread, write-lock, and idempotent-close
- * behaviour comes from {@link AbstractStreamTransport}; this class
- * only supplies the socket via {@link #openSocket()}.</p>
+ * <p>
+ * Same 2-byte little-endian stream framing as {@link TcpTransport} &mdash; TLS
+ * is just an encrypted, authenticated pipe under the same wire protocol. All
+ * the reader-thread, write-lock, and idempotent-close behaviour comes from
+ * {@link AbstractStreamTransport}; this class only supplies the socket via
+ * {@link #openSocket()}.</p>
  *
- * <p>Handshake behaviour:</p>
+ * <p>
+ * Handshake behaviour:</p>
  * <ul>
- *   <li>The plain socket connect timeout comes from
- *       {@link #setConnectTimeoutMs(int)} (default 10 s).</li>
- *   <li>The TLS handshake timeout comes from
- *       {@link TlsConfig#handshakeTimeoutMs()} (default 15 s). It is
- *       applied via a temporary {@code setSoTimeout} around
- *       {@link SSLSocket#startHandshake()} then cleared, so blocking
- *       {@code read()} calls in the reader thread do not time out on
- *       quiet-server keep-alive intervals.</li>
- *   <li>Hostname verification is on by default. Disable via
- *       {@link TlsConfig.Builder#verifyHostname(boolean)} only for
- *       pinned-cert scenarios &mdash; document the risk.</li>
- *   <li>Client certificate presentation (mTLS) is opt-in via
- *       {@link TlsConfig.Builder#keyStore(java.nio.file.Path, char[], char[])}.</li>
+ * <li>The plain socket connect timeout comes from
+ * {@link #setConnectTimeoutMs(int)} (default 10 s).</li>
+ * <li>The TLS handshake timeout comes from
+ * {@link TlsConfig#handshakeTimeoutMs()} (default 15 s). It is applied via a
+ * temporary {@code setSoTimeout} around {@link SSLSocket#startHandshake()} then
+ * cleared, so blocking {@code read()} calls in the reader thread do not time
+ * out on quiet-server keep-alive intervals.</li>
+ * <li>Hostname verification is on by default. Disable via
+ * {@link TlsConfig.Builder#verifyHostname(boolean)} only for pinned-cert
+ * scenarios &mdash; document the risk.</li>
+ * <li>Client certificate presentation (mTLS) is opt-in via
+ * {@link TlsConfig.Builder#keyStore(java.nio.file.Path, char[], char[])}.</li>
  * </ul>
  *
- * <p>ALPN is not set. Zenoh 1.x over TLS is a raw framed stream, not
- * HTTP/2 or anything else that negotiates a protocol at the ALPN
- * layer, so leaving it unset is correct.</p>
+ * <p>
+ * ALPN is not set. Zenoh 1.x over TLS is a raw framed stream, not HTTP/2 or
+ * anything else that negotiates a protocol at the ALPN layer, so leaving it
+ * unset is correct.</p>
  */
 public final class TlsTransport extends AbstractStreamTransport {
 
-    /** Default plain-socket connect timeout (ms). */
+    /**
+     * Default plain-socket connect timeout (ms).
+     */
     public static final int DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 
-    private final String    host;
-    private final int       port;
+    private final String host;
+    private final int port;
     private final TlsConfig tls;
-    private       int       connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS;
-    private       boolean   tcpNoDelay       = true;
-    private       boolean   configLocked     = false;
+    private int connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS;
+    private boolean tcpNoDelay = true;
+    private boolean configLocked = false;
 
     public TlsTransport(String host, int port, TlsConfig tls) {
         this.host = Objects.requireNonNull(host, "host");
@@ -62,20 +67,28 @@ public final class TlsTransport extends AbstractStreamTransport {
             throw new IllegalArgumentException("port out of range: " + port);
         }
         this.port = port;
-        this.tls  = Objects.requireNonNull(tls, "tls");
+        this.tls = Objects.requireNonNull(tls, "tls");
     }
 
-    /** Set the plain-socket connect timeout in ms. Must be called before {@link #connect()}. */
+    /**
+     * Set the plain-socket connect timeout in ms. Must be called before
+     * {@link #connect()}.
+     */
     public TlsTransport setConnectTimeoutMs(int ms) {
         if (configLocked) {
             throw new IllegalStateException("connectTimeoutMs must be set before connect()");
         }
-        if (ms < 0) throw new IllegalArgumentException("ms must be >= 0");
+        if (ms < 0) {
+            throw new IllegalArgumentException("ms must be >= 0");
+        }
         this.connectTimeoutMs = ms;
         return this;
     }
 
-    /** Enable / disable Nagle. Default: {@code true} (Nagle disabled). Must be called before {@link #connect()}. */
+    /**
+     * Enable / disable Nagle. Default: {@code true} (Nagle disabled). Must be
+     * called before {@link #connect()}.
+     */
     public TlsTransport setTcpNoDelay(boolean on) {
         if (configLocked) {
             throw new IllegalStateException("tcpNoDelay must be set before connect()");
@@ -119,24 +132,47 @@ public final class TlsTransport extends AbstractStreamTransport {
             int prevTimeout = sslSocket.getSoTimeout();
             sslSocket.setSoTimeout(tls.handshakeTimeoutMs());
             try {
-                sslSocket.startHandshake();
+                try {
+                    sslSocket.startHandshake();
+                } catch (SocketTimeoutException timeout) {
+                    SocketTimeoutException detailed = new SocketTimeoutException(
+                            "TLS handshake timed out after " + tls.handshakeTimeoutMs()
+                            + " ms for tls/" + host + ":" + port
+                            + ". TCP connected, but the peer did not complete TLS. "
+                            + "Verify that this exact Zenoh listener is configured as "
+                            + "'tls/" + host + ":" + port + "' rather than 'tcp/...', "
+                            + "and that no proxy or firewall is accepting the TCP connection "
+                            + "without forwarding TLS. Cause: " + timeout.getMessage());
+                    detailed.initCause(timeout);
+                    throw detailed;
+                }
             } finally {
                 sslSocket.setSoTimeout(prevTimeout);
             }
             return sslSocket;
         } catch (IOException e) {
             if (sslSocket != null) {
-                try { sslSocket.close(); } catch (IOException ignored) {}
+                try {
+                    sslSocket.close();
+                } catch (IOException ignored) {
+                }
             } else {
-                try { plain.close(); } catch (IOException ignored) {}
+                try {
+                    plain.close();
+                } catch (IOException ignored) {
+                }
             }
             throw e;
         }
     }
 
     @Override
-    protected String readerThreadTag() { return "tls-" + host + ":" + port; }
+    protected String readerThreadTag() {
+        return "tls-" + host + ":" + port;
+    }
 
     @Override
-    public String describe() { return "tls/" + host + ":" + port; }
+    public String describe() {
+        return "tls/" + host + ":" + port;
+    }
 }

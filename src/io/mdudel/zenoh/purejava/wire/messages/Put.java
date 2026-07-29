@@ -107,7 +107,11 @@ public record Put(
 
     /** Parse a Put from bytes. */
     public static Put decode(byte[] data) {
-        RBuf r = new RBuf(data);
+        return decode(new RBuf(data));
+    }
+
+    /** Decode one PUT from a shared frame cursor, leaving following messages unread. */
+    public static Put decode(RBuf r) {
         int header = r.u8();
         int id = header & 0x1F;
         if (id != ID) {

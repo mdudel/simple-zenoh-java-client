@@ -14,11 +14,14 @@ import java.nio.file.Path;
 import java.security.KeyFactory;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.RSAPublicKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -143,6 +146,37 @@ public final class PemLoader {
             if (key != null) return key;
         }
         throw new IOException("no PRIVATE KEY PEM block found in " + pemPath);
+    }
+
+    /**
+     * Read an RSA public key in PKCS#1 ({@code RSA PUBLIC KEY}) or X.509
+     * SubjectPublicKeyInfo ({@code PUBLIC KEY}) PEM form.
+     */
+    public static PublicKey readPublicKey(Path pemPath) throws IOException {
+        Objects.requireNonNull(pemPath, "pemPath");
+        String text = Files.readString(pemPath, StandardCharsets.US_ASCII);
+        Matcher matcher = PEM_BLOCK.matcher(text);
+        while (matcher.find()) {
+            String label = matcher.group(1).trim();
+            byte[] der = decodeBase64Body(matcher.group(2));
+            try {
+                if ("PUBLIC KEY".equals(label)) {
+                    return KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der));
+                }
+                if ("RSA PUBLIC KEY".equals(label)) {
+                    DerReader outer = new DerReader(der);
+                    DerReader sequence = new DerReader(outer.readValue(0x30));
+                    java.math.BigInteger modulus = new java.math.BigInteger(1, sequence.readValue(0x02));
+                    java.math.BigInteger exponent = new java.math.BigInteger(1, sequence.readValue(0x02));
+                    return KeyFactory.getInstance("RSA").generatePublic(
+                            new RSAPublicKeySpec(modulus, exponent));
+                }
+            } catch (NoSuchAlgorithmException | InvalidKeySpecException | IllegalArgumentException e) {
+                throw new IOException("failed to decode RSA public key in " + pemPath
+                        + ": " + e.getMessage(), e);
+            }
+        }
+        throw new IOException("no PUBLIC KEY PEM block found in " + pemPath);
     }
 
     // ---- internals ----------------------------------------------------
