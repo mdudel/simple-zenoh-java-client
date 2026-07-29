@@ -1,7 +1,8 @@
-# NetBeans / Ant build output
-build/
-dist/
-nbproject/private/
+# Maven build output
+target/
+
+# Downloadable release artefacts belong in GitHub Releases, not git
+*.zip
 
 # IDE cruft
 .nb-gradle/

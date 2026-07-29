@@ -1,14 +1,70 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <groupId>mdudel</groupId>
-    <artifactId>zenoh-client</artifactId>
+
+    <groupId>io.mdudel.zenoh</groupId>
+    <artifactId>simple-zenoh-java-client</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
+
+    <name>simple-zenoh-java-client</name>
+    <description>Pure-Java Zenoh 1.x client + runnable Pub / Sub / Scout samples.</description>
+    <url>https://github.com/mdudel/simple-zenoh-java-client</url>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
-        <exec.mainClass>io.mdudel.zeno.ZenohClient</exec.mainClass>
+        <junit.jupiter.version>5.10.2</junit.jupiter.version>
     </properties>
+
+    <!--
+        Runtime: zero dependencies. Pure JDK 17. This is the design
+        invariant inherited from the parent java-zenoh-publisher /
+        pure-java module; do not add runtime dependencies without a
+        conversation.
+
+        Test scope only: JUnit 5 (Jupiter). Used by PemLoaderTest and
+        any future *Test class under src/test/java.
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+            <!--
+                Surefire 3.x is required for JUnit 5 test discovery.
+                The Maven-default surefire is 2.12.x, which only sees
+                JUnit 4 style tests and silently reports 0 tests run
+                against Jupiter classes.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+            <!--
+                Default jar packaging - produces
+                target/simple-zenoh-java-client-1.0-SNAPSHOT.jar with
+                just the compiled classes. No Main-Class in the
+                manifest because this project ships THREE runnable
+                samples (Pub / Sub / Scout); pick one on the java
+                command line, or use the platform .bat / .sh runners.
+            -->
+        </plugins>
+    </build>
 </project>

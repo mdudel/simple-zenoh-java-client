@@ -3,7 +3,7 @@
 A simple project using the pure-Java Zenoh client from
 [java-zenoh-publisher](https://github.com/mdudel/java-zenoh-publisher).
 
-It is a simple ANT project used to show how to create a simple Java
+It is a simple Maven project used to show how to create a simple Java
 Zenoh Publisher, Subscriber and Scout (multicast discovery of nearby
 routers and peers).
 
@@ -18,31 +18,40 @@ GitHub Pages:
 - **API reference**: https://mdudel.github.io/simple-zenoh-java-client/
 
 Covers both `io.mdudel.zenoh.purejava.*` (the client) and
-`sample.nb.ant.zenoh.*` (the runnable samples). The generator is
+`sample.zenoh.*` (the runnable samples). The generator is
 [.github/workflows/javadoc.yml](.github/workflows/javadoc.yml).
 
 ## Layout
 
+Standard Maven layout (converted from Ant/NetBeans on 2026-07-29):
+
 ```
+pom.xml
 src/
-├── io/mdudel/zenoh/purejava/          the pure-Java Zenoh client
-└── sample/nb/ant/zenoh/
-    ├── ZenohJavaPubAnt.java           minimal publisher sample
-    ├── ZenohJavaSubAnt.java           minimal subscriber sample
-    └── ZenohJavaScoutAnt.java         minimal scout / discovery sample
+├── main/java/
+│   ├── io/mdudel/zenoh/purejava/       the pure-Java Zenoh client
+│   └── sample/zenoh/
+│       ├── ZenohJavaPubAnt.java        minimal publisher sample
+│       ├── ZenohJavaSubAnt.java        minimal subscriber sample
+│       └── ZenohJavaScoutAnt.java      minimal scout / discovery sample
+└── test/java/
+    └── io/mdudel/zenoh/purejava/       unit tests (PemLoader, etc.)
 ```
+
+Runtime dependencies: **zero** (pure JDK 17). Test scope: JUnit 5.
 
 ## Build & run
 
 ```
-ant clean jar
-java -jar dist/ZenohJavaAnt.jar          # runs whichever main-class is set in manifest.mf
+mvn -q package                              # compile + test + produce target/*.jar
+java -cp target/classes sample.zenoh.ZenohJavaPubAnt
 ```
 
-Or run the platform helpers:
+Or run the platform helpers (they use `target/classes`, so
+`mvn compile` is enough):
 
 ```
-runPub.bat   [endpoint] [key] [count] [interval-ms]
+runPub.bat   [endpoint] [key] [message] [count] [interval-ms]
 runSub.bat   [endpoint] [keyExpr] [timeout-seconds]
 runScout.bat [mode] [interval-ms] [roles-csv] [timeout-seconds]
 ```
@@ -89,8 +98,8 @@ zenohSubscriber.subscribeAndConsume("demo/**", sample ->
 zenohSubscriber.stop();          // clean CLOSE
 ```
 
-See [`ZenohJavaPubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaPubAnt.java)
-and [`ZenohJavaSubAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaSubAnt.java)
+See [`ZenohJavaPubAnt.java`](src/main/java/sample/zenoh/ZenohJavaPubAnt.java)
+and [`ZenohJavaSubAnt.java`](src/main/java/sample/zenoh/ZenohJavaSubAnt.java)
 for the full runnable versions with CLI args, error handling, and TLS
 notes in the class Javadoc.
 
@@ -128,6 +137,6 @@ for (DiscoveredNode n : zenohScout.snapshot()) {
 zenohScout.close();          // idempotent; safe from any thread
 ```
 
-See [`ZenohJavaScoutAnt.java`](src/sample/nb/ant/zenoh/ZenohJavaScoutAnt.java)
+See [`ZenohJavaScoutAnt.java`](src/main/java/sample/zenoh/ZenohJavaScoutAnt.java)
 for the full runnable version with CLI args, error handling, and the
 Windows firewall / loopback-multicast gotchas in the class Javadoc.

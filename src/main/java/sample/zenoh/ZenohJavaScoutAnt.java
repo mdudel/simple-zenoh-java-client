@@ -7,7 +7,7 @@
  *                    THIS NOTICE DOES NOT IMPLY PUBLICATION
  * -----------------------------------------------------------------------------
  */
-package sample.nb.ant.zenoh;
+package sample.zenoh;
 
 import io.mdudel.zenoh.purejava.scouting.DiscoveredNode;
 import io.mdudel.zenoh.purejava.scouting.PureJavaZenohScout;
