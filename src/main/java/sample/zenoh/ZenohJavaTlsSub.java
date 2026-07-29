@@ -91,8 +91,51 @@ public class ZenohJavaTlsSub {
         String rootCaCertPath = args[1];
         String clientCertPath = args[2];
         String clientKeyPath  = args[3];
-        String keyExpr        = args.length > 4 ? args[4] : "**";
-        long   timeoutSeconds = args.length > 5 ? Long.parseLong(args[5]) : 0L;
+
+        // Defense-in-depth against a Windows-argv trap: the java.exe
+        // launcher applies MSVCRT-style glob expansion to unquoted
+        // ** / * arguments BEFORE main() sees them. Symptom is that
+        // args[4] becomes a filename from the launch directory
+        // (".github" if that's alphabetically first) and args[5]+
+        // become more filenames -- so a bare `runTlsSub.bat` with
+        // no explicit keyExpr would silently expand ** into a
+        // directory listing and blow up parseLong on a filename.
+        // If keyExpr looks like a filesystem path (contains backslash
+        // or forward-slash-relative starts with '.') AND the .bat
+        // did not intentionally quote it that way, fail loudly with
+        // an actionable hint instead of subscribing to garbage.
+        String keyExpr;
+        if (args.length > 4) {
+            keyExpr = args[4];
+            if (looksLikeGlobbedFilename(keyExpr)) {
+                System.err.println("[zenoh-java-tls-sub] REFUSING to subscribe to '" + keyExpr
+                        + "' -- looks like the Windows java launcher glob-expanded a bare **/*");
+                System.err.println("  Fix: either quote the wildcard as \"**\" on the command line,");
+                System.err.println("       or omit the keyExpr arg entirely to let the sample default to **.");
+                System.err.println("  Received argv: " + java.util.Arrays.toString(args));
+                System.exit(3);
+            }
+        } else {
+            keyExpr = "**";
+        }
+
+        long timeoutSeconds;
+        if (args.length > 5) {
+            try {
+                timeoutSeconds = Long.parseLong(args[5]);
+            } catch (NumberFormatException nfe) {
+                System.err.println("[zenoh-java-tls-sub] timeoutSeconds must be a whole number, got '"
+                        + args[5] + "'");
+                System.err.println("  (If you're seeing a filename here, the Windows java launcher");
+                System.err.println("   probably glob-expanded a bare ** in your .bat file -- see the");
+                System.err.println("   Windows-argv note in runTlsSub.bat.)");
+                System.err.println("  Received argv: " + java.util.Arrays.toString(args));
+                System.exit(3);
+                return; // unreachable; keeps the compiler happy
+            }
+        } else {
+            timeoutSeconds = 0L;
+        }
 
         String pad = "                       ";
         System.out.println("[zenoh-java-tls-sub] endpoint=" + endpoint
@@ -179,6 +222,25 @@ public class ZenohJavaTlsSub {
                         + pad + "   (mTLS requires the server to trust the client's CA too).");
             }
         }
+    }
+
+    /**
+     * Heuristic: does {@code keyExpr} look like a file or directory name
+     * that the Windows java launcher accidentally globbed onto our
+     * argv from an unquoted {@code **}? Legitimate Zenoh key expressions
+     * don't contain backslashes and don't start with a leading dot.
+     */
+    private static boolean looksLikeGlobbedFilename(String keyExpr) {
+        if (keyExpr == null || keyExpr.isEmpty()) return false;
+        if (keyExpr.startsWith(".")) return true;              // .github, .gitignore, etc.
+        if (keyExpr.contains("\\")) return true;               // Windows path
+        // Files with common extensions -- if the batch dir has files
+        // like API.md, README.md, pom.xml the launcher may pass those
+        // as argv entries too.
+        if (keyExpr.endsWith(".md") || keyExpr.endsWith(".xml")
+                || keyExpr.endsWith(".bat") || keyExpr.endsWith(".jar")
+                || keyExpr.endsWith(".zip")) return true;
+        return false;
     }
 
     /**
