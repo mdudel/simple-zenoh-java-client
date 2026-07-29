@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
  * on Ctrl-C or after an optional timeout.
  *
  * <p>
- * Unlike {@link ZenohJavaPubAnt} and {@link ZenohJavaSubAnt} this tool never
+ * Unlike {@link ZenohJavaPub} and {@link ZenohJavaSub} this tool never
  * opens a TCP/TLS session to a router. It is a pure UDP-multicast observer
  * that decodes HELLOs and (in active mode) emits SCOUTs. Routers do not see it
  * as a Zenoh peer, client, or session.
@@ -90,7 +90,7 @@ import java.util.concurrent.TimeUnit;
  * pull API for asking "what nodes do you currently know about?" at any moment.
  * The final shutdown line uses snapshot() to dump the surviving registry.
  */
-public class ZenohJavaScoutAnt {
+public class ZenohJavaScout {
 
     /**
      * Program entry point.

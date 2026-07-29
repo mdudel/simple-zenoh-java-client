@@ -35,7 +35,7 @@ import java.nio.charset.StandardCharsets;
  * </ol>
  *
  * <p>
- * Pairs with {@link ZenohJavaSubAnt} for a quick end-to-end smoke test against
+ * Pairs with {@link ZenohJavaSub} for a quick end-to-end smoke test against
  * a local {@code zenohd}.
  *
  * @author Marty
@@ -60,7 +60,7 @@ import java.nio.charset.StandardCharsets;
  * call sends to it. For multi-key publishes from one session, use the
  * {@code publish(subKey, data)} overload instead.
  */
-public class ZenohJavaPubAnt {
+public class ZenohJavaPub {
 
     /**
      * Program entry point.

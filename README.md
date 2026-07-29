@@ -31,9 +31,9 @@ src/
 ├── main/java/
 │   ├── io/mdudel/zenoh/purejava/       the pure-Java Zenoh client
 │   └── sample/zenoh/
-│       ├── ZenohJavaPubAnt.java        minimal publisher sample
-│       ├── ZenohJavaSubAnt.java        minimal subscriber sample
-│       └── ZenohJavaScoutAnt.java      minimal scout / discovery sample
+│       ├── ZenohJavaPub.java           minimal publisher sample
+│       ├── ZenohJavaSub.java           minimal subscriber sample
+│       └── ZenohJavaScout.java         minimal scout / discovery sample
 └── test/java/
     └── io/mdudel/zenoh/purejava/       unit tests (PemLoader, etc.)
 ```
@@ -44,7 +44,7 @@ Runtime dependencies: **zero** (pure JDK 17). Test scope: JUnit 5.
 
 ```
 mvn -q package                              # compile + test + produce target/*.jar
-java -cp target/classes sample.zenoh.ZenohJavaPubAnt
+java -cp target/classes sample.zenoh.ZenohJavaPub
 ```
 
 Or run the platform helpers (they use `target/classes`, so
@@ -98,8 +98,8 @@ zenohSubscriber.subscribeAndConsume("demo/**", sample ->
 zenohSubscriber.stop();          // clean CLOSE
 ```
 
-See [`ZenohJavaPubAnt.java`](src/main/java/sample/zenoh/ZenohJavaPubAnt.java)
-and [`ZenohJavaSubAnt.java`](src/main/java/sample/zenoh/ZenohJavaSubAnt.java)
+See [`ZenohJavaPub.java`](src/main/java/sample/zenoh/ZenohJavaPub.java)
+and [`ZenohJavaSub.java`](src/main/java/sample/zenoh/ZenohJavaSub.java)
 for the full runnable versions with CLI args, error handling, and TLS
 notes in the class Javadoc.
 
@@ -137,6 +137,6 @@ for (DiscoveredNode n : zenohScout.snapshot()) {
 zenohScout.close();          // idempotent; safe from any thread
 ```
 
-See [`ZenohJavaScoutAnt.java`](src/main/java/sample/zenoh/ZenohJavaScoutAnt.java)
+See [`ZenohJavaScout.java`](src/main/java/sample/zenoh/ZenohJavaScout.java)
 for the full runnable version with CLI args, error handling, and the
 Windows firewall / loopback-multicast gotchas in the class Javadoc.

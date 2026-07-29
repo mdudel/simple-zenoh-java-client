@@ -62,7 +62,7 @@ import java.util.concurrent.TimeUnit;
  * it every registered subscription). If the try-block throws before
  * {@code stop()}, the JVM exit and transport close serve the same purpose.
  */
-public class ZenohJavaSubAnt {
+public class ZenohJavaSub {
 
     /**
      * Program entry point.
@@ -146,7 +146,7 @@ public class ZenohJavaSubAnt {
             if (msg.contains("session open failed: handshake failure: connect failed to tcp")) {
                 System.out.println("[zenoh-java-ant-sub] Exception\n"
                         + pad + "If this is a Windows OS, either connect via IPv6:\n"
-                        + pad + "    java -jar ZenohJavaAnt.jar tcp/[::1]:7447\n"
+                        + pad + "    java -cp target/classes sample.zenoh.ZenohJavaSub tcp/[::1]:7447\n"
                         + pad + "or start zenohd bound to both stacks:\n"
                         + pad + "    zenohd.exe --listen tcp/0.0.0.0:7447 --listen tcp/[::]:7447");
             } else {
