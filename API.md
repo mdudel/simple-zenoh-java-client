@@ -9,7 +9,9 @@ For a quick-start "just show me the code" version, see the
 [README](README.md). For end-to-end runnable samples, see
 [`ZenohJavaPub.java`](src/main/java/sample/zenoh/ZenohJavaPub.java),
 [`ZenohJavaSub.java`](src/main/java/sample/zenoh/ZenohJavaSub.java),
-and [`ZenohJavaScout.java`](src/main/java/sample/zenoh/ZenohJavaScout.java).
+[`ZenohJavaScout.java`](src/main/java/sample/zenoh/ZenohJavaScout.java),
+and [`ZenohJavaTlsSub.java`](src/main/java/sample/zenoh/ZenohJavaTlsSub.java)
+(mTLS subscriber + topic-discovery mode).
 
 ---
 

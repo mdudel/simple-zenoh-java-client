@@ -33,7 +33,8 @@ src/
 │   └── sample/zenoh/
 │       ├── ZenohJavaPub.java           minimal publisher sample
 │       ├── ZenohJavaSub.java           minimal subscriber sample
-│       └── ZenohJavaScout.java         minimal scout / discovery sample
+│       ├── ZenohJavaScout.java         minimal scout / discovery sample
+│       └── ZenohJavaTlsSub.java        mTLS subscriber + topic-discovery mode
 └── test/java/
     └── io/mdudel/zenoh/purejava/       unit tests (PemLoader, etc.)
 ```
@@ -51,10 +52,42 @@ Or run the platform helpers (they use `target/classes`, so
 `mvn compile` is enough):
 
 ```
-runPub.bat   [endpoint] [key] [message] [count] [interval-ms]
-runSub.bat   [endpoint] [keyExpr] [timeout-seconds]
-runScout.bat [mode] [interval-ms] [roles-csv] [timeout-seconds]
+runPub.bat    [endpoint] [key] [message] [count] [interval-ms]
+runSub.bat    [endpoint] [keyExpr] [timeout-seconds]
+runScout.bat  [mode] [interval-ms] [roles-csv] [timeout-seconds]
+runTlsSub.bat [keyExpr] [timeout-seconds]        # mTLS; cert paths
+                                                 # hard-wired in the .bat
 ```
+
+### mTLS subscriber + topic discovery
+
+`runTlsSub.bat` (and the class it wraps, `ZenohJavaTlsSub`) connects
+to a Zenoh router over TLS with client-certificate authentication.
+Zenoh has no topic-registry primitive, so "list topics" here means:
+subscribe to a wildcard key expression, track every unique key that
+receives at least one sample during the run, and print the sorted
+summary on Ctrl-C or after the optional timeout.
+
+The shipped `.bat` is hard-wired to the GOAT NET onboarding certs +
+router (`tls/100.64.165.203:7447`); to point it elsewhere, either
+edit the `set ROUTER=` / `set CERTDIR=` / `set CA=` / `set CERT=` /
+`set KEY=` lines at the top of the batch file, or invoke the class
+directly with all four positional arguments:
+
+```
+java -cp target/classes sample.zenoh.ZenohJavaTlsSub ^
+  tls/host:port ^
+  path\to\rootCa.pem ^
+  path\to\client-cert.pem ^
+  path\to\client-key.pem ^
+  [keyExpr] [timeoutSeconds]
+```
+
+Hostname verification is disabled in the sample because the typical
+field endpoint is an IP (Tailscale / CGNAT `100.x.x.x`) where the
+server cert's CN/SAN would not match. Trust is still anchored to the
+CA root; MITM protection is intact. Flip `.verifyHostname(true)` in
+`ZenohJavaTlsSub` for hostname-based deployments.
 
 Defaults assume a local `zenohd` on `tcp/localhost:7447`. On Windows,
 if you hit `Connection refused: getsockopt`, use `tcp/[::1]:7447` or
