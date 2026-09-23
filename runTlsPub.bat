@@ -40,10 +40,9 @@ REM sense for a publisher anyway -- publishers name a concrete key).
 
 setlocal
 set ROUTER=tls/100.64.165.203:7447
-set CERTDIR=d:\DEV\GOAT NET ONBOARDING\efdi-onboarding
-set CA=%CERTDIR%\efdi-ca-root.pem
-set CERT=%CERTDIR%\0472940bda1695cb078cd8e927b7afed-cert.pem
-set KEY=%CERTDIR%\0472940bda1695cb078cd8e927b7afed-key.pem
+set CERTDIR=D:\GOAT
+set CERT=%CERTDIR%\996dfb6c880346559dff117458d27b66-cert.pem
+set KEY=%CERTDIR%\996dfb6c880346559dff117458d27b66-key.pem
 
 REM Positional pass-through. Same defensive pattern as runTlsSub.bat:
 REM we deliberately DO NOT inject batch-level defaults for %1..%3 --
