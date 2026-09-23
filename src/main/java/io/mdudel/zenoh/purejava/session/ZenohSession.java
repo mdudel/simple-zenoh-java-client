@@ -10,7 +10,9 @@ import io.mdudel.zenoh.purejava.transport.TransportException;
 import io.mdudel.zenoh.purejava.wire.Encoding;
 import io.mdudel.zenoh.purejava.wire.KeyExpr;
 import io.mdudel.zenoh.purejava.wire.Extension;
+import io.mdudel.zenoh.purejava.wire.Qos;
 import io.mdudel.zenoh.purejava.wire.RBuf;
+import io.mdudel.zenoh.purejava.wire.Timestamp;
 import io.mdudel.zenoh.purejava.wire.ZenohId;
 import io.mdudel.zenoh.purejava.wire.messages.Close;
 import io.mdudel.zenoh.purejava.wire.messages.Declare;
@@ -261,6 +263,35 @@ public final class ZenohSession implements AutoCloseable {
 
     /** Publish with an explicit encoding. */
     public void publish(String keyExpr, byte[] payload, Encoding encoding) throws SessionException {
+        publish(keyExpr, payload, encoding, /*qos=*/null, /*ts=*/null, /*nodeId=*/0L);
+    }
+
+    /**
+     * Publish with explicit encoding plus optional network extensions
+     * (QoS, Timestamp, NodeId).
+     *
+     * <p>Each of the three extension arguments is opt-in and skipped
+     * when at its default value, keeping the wire output byte-identical
+     * to {@link #publish(String, byte[], Encoding)} for callers that do
+     * not opt in:</p>
+     * <ul>
+     *   <li>{@code qos == null} or {@link Qos#DEFAULT} - no QoS extension emitted.</li>
+     *   <li>{@code ts == null} - no Timestamp extension emitted.</li>
+     *   <li>{@code nodeId == 0} - no NodeId extension emitted.</li>
+     * </ul>
+     *
+     * <p>{@code localRouting} still fires the same way it does on the
+     * simpler overloads.</p>
+     *
+     * @param keyExpr  target key expression
+     * @param payload  message payload (defensively copied by {@link Put})
+     * @param encoding payload encoding tag
+     * @param qos      QoS descriptor, or {@code null} / {@link Qos#DEFAULT} to omit
+     * @param ts       source timestamp, or {@code null} to omit
+     * @param nodeId   origin routing id (u32 range), or {@code 0} to omit
+     */
+    public void publish(String keyExpr, byte[] payload, Encoding encoding,
+                        Qos qos, Timestamp ts, long nodeId) throws SessionException {
         if (state.get() != SessionState.OPEN) {
             throw new SessionException("publish requires state=OPEN, current=" + state.get());
         }
@@ -268,7 +299,7 @@ public final class ZenohSession implements AutoCloseable {
         Objects.requireNonNull(payload,  "payload");
         Objects.requireNonNull(encoding, "encoding");
         Put put = new Put(null, encoding, java.util.List.of(), payload);
-        Push push = Push.ofPut(keyExpr, put);
+        Push push = Push.ofPut(keyExpr, put, qos, ts, nodeId);
         long sn = outboundSn.getAndIncrement();
         Frame frame = Frame.ofPush(sn, /* reliable = */ true, push);
         sendRaw(frame.encode());
