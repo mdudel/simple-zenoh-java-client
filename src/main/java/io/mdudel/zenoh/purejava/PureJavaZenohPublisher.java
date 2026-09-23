@@ -20,7 +20,12 @@ import io.mdudel.zenoh.purejava.transport.TlsConfig;
 import io.mdudel.zenoh.purejava.transport.TlsTransport;
 import io.mdudel.zenoh.purejava.transport.Transport;
 import io.mdudel.zenoh.purejava.transport.WsTransport;
+import io.mdudel.zenoh.purejava.wire.Encoding;
 import io.mdudel.zenoh.purejava.wire.KeyExpr;
+import io.mdudel.zenoh.purejava.wire.Priority;
+import io.mdudel.zenoh.purejava.wire.Qos;
+import io.mdudel.zenoh.purejava.wire.Timestamp;
+import io.mdudel.zenoh.purejava.wire.ZenohId;
 import java.io.File;
 
 import java.io.IOException;
@@ -67,15 +72,22 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
     private static final Logger LOG = System.getLogger(PureJavaZenohPublisher.class.getName());
 
     // ----- config (immutable) --------------------------------------------
-    private final String  connectEndpoint;
-    private final String  keyExpr;
-    private final String  org;
-    private final String  rootCaCertPath;
-    private final String  clientCertPath;
-    private final String  clientKeyPath;
-    private final char[]  keyStorePassword;
-    private final boolean verifyHostname;
-    private final long    leaseMs;
+    private final String    connectEndpoint;
+    private final String    keyExpr;
+    private final String    org;
+    private final String    rootCaCertPath;
+    private final String    clientCertPath;
+    private final String    clientKeyPath;
+    private final char[]    keyStorePassword;
+    private final boolean   verifyHostname;
+    private final long      leaseMs;
+    // ----- optional per-publisher defaults for QoS / Timestamp / NodeId --
+    // Any of these can be overridden per publish call via the extended
+    // publish(...) overloads. All are opt-in: with builder defaults, the
+    // wire output is byte-identical to the pre-QoS client.
+    private final Qos       defaultQos;        // null-safe: Qos.DEFAULT means "no ext emitted"
+    private final boolean   autoTimestamp;     // if true, stamp every publish with now()+session.zid()
+    private final long      defaultNodeId;     // 0 = no ext emitted
 
     // ----- runtime state -------------------------------------------------
     private volatile ZenohSession session;
@@ -95,6 +107,9 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
         this.keyStorePassword = b.keyStorePassword;
         this.verifyHostname   = b.verifyHostname;
         this.leaseMs          = b.leaseMs;
+        this.defaultQos       = (b.defaultQos != null) ? b.defaultQos : Qos.DEFAULT;
+        this.autoTimestamp    = b.autoTimestamp;
+        this.defaultNodeId    = b.defaultNodeId;
     }
 
     private static String nz(String s) { return s == null ? "" : s; }
@@ -169,9 +184,50 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
 
     /**
      * Publish to {@code effectiveKeyExpr/subKey} if {@code subKey} is
-     * non-null and non-empty, otherwise to the base key.
+     * non-null and non-empty, otherwise to the base key. Uses the
+     * publisher-scope defaults for QoS / auto-timestamp / node id (see
+     * the {@link Builder}). With default builder values, wire output is
+     * byte-identical to the pre-QoS client.
      */
     public void publish(String subKey, byte[] data) throws IOException {
+        publish(subKey, data, defaultQos, autoTimestamp ? nowTimestamp() : null, defaultNodeId);
+    }
+
+    /**
+     * Publish overriding the publisher-scope QoS default for this one
+     * message. Auto-timestamp and node id follow the publisher defaults.
+     */
+    public void publish(String subKey, byte[] data, Qos qos) throws IOException {
+        publish(subKey, data, qos, autoTimestamp ? nowTimestamp() : null, defaultNodeId);
+    }
+
+    /**
+     * Publish overriding just the priority for this one message.
+     * Convenience for callers that only care about priority (the common
+     * case). Congestion control and express stay at their defaults
+     * ({@link io.mdudel.zenoh.purejava.wire.CongestionControl#DROP},
+     * {@code express=false}).
+     */
+    public void publish(String subKey, byte[] data, Priority priority) throws IOException {
+        publish(subKey, data, Qos.of(priority));
+    }
+
+    /**
+     * Full-fidelity publish overload with explicit QoS / Timestamp /
+     * NodeId. Any argument at its default value produces the
+     * byte-identical pre-QoS wire shape for that extension:
+     *
+     * <ul>
+     *   <li>{@code qos == null} or {@link Qos#DEFAULT} - no QoS ext.</li>
+     *   <li>{@code ts == null} - no Timestamp ext.</li>
+     *   <li>{@code nodeId == 0} - no NodeId ext.</li>
+     * </ul>
+     *
+     * <p>Passing {@code qos == Qos.DEFAULT, ts == null, nodeId == 0}
+     * gives byte-for-byte identical wire output to the historical
+     * {@link #publish(String, byte[])} behaviour.</p>
+     */
+    public void publish(String subKey, byte[] data, Qos qos, Timestamp ts, long nodeId) throws IOException {
         ZenohSession s = session;
         if (s == null || s.state() != SessionState.OPEN) {
             throw new IOException("PureJavaZenohPublisher is not started");
@@ -181,7 +237,7 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
                 ? effective
                 : effective + "/" + subKey;
         try {
-            s.publish(key, data);
+            s.publish(key, data, Encoding.EMPTY, qos, ts, nodeId);
         } catch (SessionException e) {
             lastError = "publish failed: " + e.getMessage();
             throw new IOException(lastError, e);
@@ -193,6 +249,21 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
     /** Publish a UTF-8 string with the Zenoh string encoding tag. */
     public void publishString(String subKey, String payload) throws IOException {
         publish(subKey, payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Build a "now" {@link Timestamp} using the current wall clock and
+     * the session's ZenohId. Returns {@code null} if the session is not
+     * yet started (so auto-timestamp is silently skipped in that
+     * window; the caller's publish call will fail with a clearer error
+     * about the session not being open).
+     */
+    private Timestamp nowTimestamp() {
+        ZenohSession s = session;
+        if (s == null) return null;
+        ZenohId zid = s.localId();
+        if (zid == null) return null;
+        return Timestamp.now(zid);
     }
 
     // ----- endpoint parsing + transport factory --------------------------
@@ -373,6 +444,9 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
         private char[]  keyStorePassword = "changeit".toCharArray();
         private boolean verifyHostname   = true;
         private long    leaseMs          = ZenohSession.DEFAULT_LEASE_MS;
+        private Qos     defaultQos       = Qos.DEFAULT;
+        private boolean autoTimestamp    = false;
+        private long    defaultNodeId    = 0L;
 
         public Builder connectEndpoint(String v) { this.connectEndpoint = v; return this; }
         public Builder keyExpr(String v)         { this.keyExpr         = v; return this; }
@@ -383,6 +457,43 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
         public Builder keyStorePassword(char[] v){ this.keyStorePassword = v; return this; }
         public Builder verifyHostname(boolean v) { this.verifyHostname  = v; return this; }
         public Builder leaseMs(long v)           { this.leaseMs         = v; return this; }
+
+        /**
+         * Publisher-scope default QoS. Every {@link #publish(String, byte[])}
+         * call uses this unless overridden with a per-call {@code Qos}.
+         * Default: {@link Qos#DEFAULT} (no QoS extension emitted on the wire).
+         */
+        public Builder defaultQos(Qos v) { this.defaultQos = (v != null) ? v : Qos.DEFAULT; return this; }
+
+        /**
+         * Publisher-scope default priority. Convenience wrapper for
+         * {@link #defaultQos(Qos)} with {@code Qos.of(priority)}.
+         */
+        public Builder defaultPriority(Priority v) {
+            return defaultQos(v == null ? Qos.DEFAULT : Qos.of(v));
+        }
+
+        /**
+         * If true, every publish call stamps the outbound message with a
+         * fresh {@link Timestamp} carrying {@code System.currentTimeMillis()}
+         * and the session's ZenohId. Default: false (no Timestamp extension
+         * emitted; wire is byte-identical to the pre-QoS client).
+         */
+        public Builder autoTimestamp(boolean v) { this.autoTimestamp = v; return this; }
+
+        /**
+         * Publisher-scope NodeId (u32 routing origin). 0 (the default)
+         * suppresses the NodeId extension on the wire, keeping output
+         * byte-identical to the pre-QoS client.
+         */
+        public Builder originNodeId(long v) {
+            if (v < 0 || v > 0xFFFFFFFFL) {
+                throw new IllegalArgumentException(
+                        "originNodeId must fit in u32 (0..4294967295): " + v);
+            }
+            this.defaultNodeId = v;
+            return this;
+        }
 
         public PureJavaZenohPublisher build() { return new PureJavaZenohPublisher(this); }
     }

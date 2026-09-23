@@ -50,6 +50,77 @@ TCP/TLS session. See [Builder options: Scout](#builder-options-scout).
 | `keyStorePassword(char[])`                | `"changeit"`                   | Password for PKCS12 trust and key stores. Ignored for PEM. |
 | `verifyHostname(boolean)`                 | `true`                         | Verify the router's cert SAN against the endpoint host. Turn off ONLY for lab/dev. |
 | `leaseMs(long)`                           | `ZenohSession.DEFAULT_LEASE_MS`| Session lease (keepalive interval). |
+| `defaultQos(Qos)`                         | `Qos.DEFAULT` (no ext emitted) | Publisher-scope default `Qos`; applies to every `publish(...)` unless overridden per call. |
+| `defaultPriority(Priority)`               | `Priority.DATA`                | Sugar for `defaultQos(Qos.of(p))`. |
+| `autoTimestamp(boolean)`                  | `false`                        | If `true`, stamp every publish with a fresh `Timestamp` (`now()` + session ZID). *Blocked by upstream #7 for current-date wall clock values; safe for hand-picked timestamps.* |
+| `originNodeId(long)`                      | `0` (no ext emitted)           | Publisher-scope u32 origin routing id. |
+
+### QoS / Timestamp / NodeId in one page
+
+Every `PureJavaZenohPublisher.publish(...)` call now supports opt-in
+QoS / Timestamp / NodeId extensions. If you never touch these APIs,
+the wire is byte-for-byte identical to previous versions of this
+client.
+
+**Publish overloads:**
+
+```java
+pub.publish(byte[]);                                    // uses builder defaults
+pub.publish(String subKey, byte[]);                     // uses builder defaults
+pub.publish(String subKey, byte[], Qos);                // override QoS only
+pub.publish(String subKey, byte[], Priority);           // override priority only
+pub.publish(String subKey, byte[], Qos, Timestamp, long); // full fidelity
+```
+
+**Priority values** (`io.mdudel.zenoh.purejava.wire.Priority`,
+matching Rust ordinals 0..7):
+
+| Java enum          | Wire value | Zenoh Display   | CLI parse form                 |
+|--------------------|------------|-----------------|---------------------------------|
+| `CONTROL`          | 0          | `control`         | `control`                       |
+| `REAL_TIME`        | 1          | `real-time`       | `real_time` or `real-time`      |
+| `INTERACTIVE_HIGH` | 2          | `interactive-high`| `interactive_high` (or dash)    |
+| `INTERACTIVE_LOW`  | 3          | `interactive-low` | `interactive_low` (or dash)     |
+| `DATA_HIGH`        | 4          | `data-high`       | `data_high` (or dash)           |
+| `DATA` **(default)**| 5         | `data`            | `data`                          |
+| `DATA_LOW`         | 6          | `data-low`        | `data_low` (or dash)            |
+| `BACKGROUND`       | 7          | `background`      | `background`                    |
+
+**`Qos` byte layout** (bit 7 -> bit 0): `0 | r | F | E | D | prio(3 bits)`
+- bits 0..2: `Priority` (0..7)
+- bit 3 (D_FLAG): `CongestionControl.BLOCK` (else `DROP`)
+- bit 4 (E_FLAG): Express
+- bit 5 (F_FLAG): reserved for unstable `BlockFirst` (not exposed)
+- Reliability is **NOT** in this byte; it is per-subscription.
+
+**Skip-when-default rules** (matching the Rust codec, keeping wire
+byte-identical to the pre-QoS client):
+- `Qos.DEFAULT` (or `null`) -> no QoS extension emitted (ext id 0x01).
+- `Timestamp == null` -> no Timestamp extension emitted (ext id 0x02).
+- `nodeId == 0` -> no NodeId extension emitted (ext id 0x03).
+
+When present, extensions appear on the wire in ascending id order.
+
+### CLI on `ZenohJavaPub`
+
+All five flags are named (start with `--`), can appear in any
+position, and do not break the existing positional contract:
+
+```
+--priority=<name>       control|real_time|...|background
+--congestion=<drop|block>
+--express               (bare = true; --express=false to turn off)
+--auto-timestamp
+--node-id=<u32>
+```
+
+Examples:
+
+```
+runPub.bat --priority=real_time tcp/[::1]:7447 skylord/tracks 10
+runPub.bat --priority=control --express tcp/[::1]:7447 skylord/cmd 1
+runPub.bat --priority=background --congestion=block tcp/[::1]:7447 bulk/dump 1
+```
 
 ## Builder options: Subscriber
 
