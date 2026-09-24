@@ -100,7 +100,7 @@ echo runTlsPub.bat - mTLS Zenoh publisher sample runner
 echo.
 echo Hard-wired to the GOAT NET onboarding certs + router:
 echo   ROUTER  = tls/100.64.165.203:7447
-echo   CERTDIR = d:\DEV\GOAT NET ONBOARDING\efdi-onboarding
+echo   CERTDIR = D:\GOAT
 echo   CA      = %%CERTDIR%%\efdi-ca-root.pem
 echo   CERT    = %%CERTDIR%%\0472940bda1695cb078cd8e927b7afed-cert.pem
 echo   KEY     = %%CERTDIR%%\0472940bda1695cb078cd8e927b7afed-key.pem

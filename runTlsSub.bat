@@ -35,7 +35,7 @@ for %%A in (%*) do (
 )
 
 set ROUTER=tls/100.64.165.203:7447
-set CERTDIR=d:\DEV\GOAT NET ONBOARDING\efdi-onboarding
+set CERTDIR=D:\GOAT
 set CA=%CERTDIR%\efdi-ca-root.pem
 set CERT=%CERTDIR%\0472940bda1695cb078cd8e927b7afed-cert.pem
 set KEY=%CERTDIR%\0472940bda1695cb078cd8e927b7afed-key.pem
