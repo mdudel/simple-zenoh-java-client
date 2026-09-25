@@ -78,28 +78,32 @@ neither is given. When `--topic` is used, the positional slots shift:
 the first two positional arguments become `count` and `interval-ms`
 instead of `keyExpr` and `count`.
 
-QoS is set through optional named flags. Leave them off and the
-sample emits byte-identical wire output to the pre-QoS client (no QoS
-extension at all). Add them to set a publisher-scope priority,
-congestion control, or the Express bit. The resolved QoS also appears
-in each published message body (e.g. `hello #1 from pure-Java (mTLS)
-[qos=DEFAULT (no ext)]`) so a subscriber printing payloads can see
-what QoS the message was sent with, not just the console banner on
-the publisher side:
+The priority (one of `control`, `real_time`, `interactive_high`,
+`interactive_low`, `data_high`, `data`, `data_low`, `background`) can
+be set through `--qos=<name>` or the older `--priority=<name>` (same
+names, `--qos` wins if both are given), or falls back to the batch
+file's own `QOS` default (`data`, which composes to `Qos.DEFAULT` and
+emits no QoS extension at all — byte-identical to the pre-QoS client).
+Congestion control and the Express bit are separate flags:
 
 ```
 runTlsPub.bat demo/hello 10 500
-runTlsPub.bat --topic=skylord/tracks 20 250 --priority=real_time
-runTlsPub.bat skylord/cmd 1 0 --priority=control --express
+runTlsPub.bat --topic=skylord/tracks 20 250 --qos=real_time
+runTlsPub.bat skylord/cmd 1 0 --qos=control --express
 runTlsPub.bat bulk/dump 1 0 --priority=background --congestion=block
 ```
+
+The resolved QoS also appears in each published message body (e.g.
+`hello #1 from pure-Java (mTLS) [qos=DEFAULT (no ext)]`) so a
+subscriber printing payloads can see what QoS the message was sent
+with, not just the console banner on the publisher side.
 
 The shipped `.bat` is hard-wired to the GOAT NET onboarding certs +
 router (`tls/100.64.165.203:7447`); to point it elsewhere, either edit
 the `set ROUTER=` / `set CERTDIR=` / `set CA=` / `set CERT=` /
-`set KEY=` / `set TOPIC=` lines at the top of the batch file, or
-invoke the class directly with all four required positional arguments
-plus the optional ones:
+`set KEY=` / `set TOPIC=` / `set QOS=` lines at the top of the batch
+file, or invoke the class directly with all four required positional
+arguments plus the optional ones:
 
 ```
 java -cp target/classes sample.zenoh.ZenohJavaTlsPub ^

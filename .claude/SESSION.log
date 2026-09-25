@@ -8,6 +8,50 @@ what was done, decisions made, and what's next.
 
 ---
 
+## 2026-09-26 (later)
+- Root-caused a real bug the user hit: `runTlsPub.bat --qos=control`
+  failed with "Unknown flag: --qos" (no "=control" in the error text).
+  Cause: cmd.exe treats space, comma, semicolon, AND "=" as parameter
+  delimiters for UNQUOTED batch args -- `--qos=control` arrives at the
+  script as TWO tokens, "--qos" and "control", with the "=" silently
+  dropped, before our script's own parsing ever runs. This affects
+  EVERY "--flag=value" in the project's .bat files, not just --qos.
+- Fixed in `runTlsPub.bat`: --topic/--qos/--priority/--congestion/
+  --node-id/--express/--auto-timestamp now all accept both the
+  cmd.exe-split two-token form ("--flag" "value") and the
+  quoted-single-token form ("--flag=value"), normalizing back to a
+  single flag before forwarding to Java. Documented the gotcha in both
+  the REM header and the --help printout.
+- Found the SAME bug in `runPub.bat` (forwards `%*` raw, no parsing at
+  all -- its own documented examples like `--priority=real_time` would
+  hit it too). NOT fixed yet -- reported to the user, awaiting their
+  call on whether to fix it there as well.
+- Verified with `mvn -q package`; hand-traced the parser against the
+  user's failing case plus all documented examples (still can't exec
+  cmd.exe directly from this sandboxed Bash tool).
+
+## 2026-09-26
+- Added `--qos=<name>` and a `QOS` preset variable (default `data`) to
+  `runTlsPub.bat`. Clarified with the user first: `--qos` is a
+  priority-name alias for `--priority` (not a composite
+  priority+congestion+express value).
+  Precedence: `--qos` > `--priority` > `QOS` default. Both `--qos=`
+  and `--priority=` are now intercepted in the batch file (Pass 1
+  `:scanflags` + Pass 2 skip) and re-emitted as a single explicit
+  `--priority=<resolved>` flag, so the Java sample never sees two
+  conflicting `--priority` flags or an unknown `--qos` one.
+  `QOS=data` composes to `Qos.DEFAULT` (value-equal, per
+  `Qos.isDefault()`), so the wire output is unchanged from before this
+  feature existed when QOS is left at its default.
+  Listed all 8 valid priority names in both the REM header and the
+  `--help` printout, per the user's ask.
+  No Java changes needed — --qos ultimately flows through the existing
+  --priority mechanism, which already gets embedded in the published
+  payload (see below).
+- Verified with `mvn -q package`; hand-traced the parser (couldn't
+  exec cmd.exe directly in this sandboxed Bash tool).
+- Updated README's mTLS publisher section accordingly.
+
 ## 2026-09-25 (later still)
 - Embedded the resolved QoS into each published payload in
   `ZenohJavaTlsPub.java` (e.g. `hello #1 from pure-Java (mTLS)
