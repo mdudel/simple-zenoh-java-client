@@ -34,6 +34,7 @@ src/
 │       ├── ZenohJavaPub.java           minimal publisher sample
 │       ├── ZenohJavaSub.java           minimal subscriber sample
 │       ├── ZenohJavaScout.java         minimal scout / discovery sample
+│       ├── ZenohJavaTlsPub.java        mTLS publisher with QoS support
 │       └── ZenohJavaTlsSub.java        mTLS subscriber + topic-discovery mode
 └── test/java/
     └── io/mdudel/zenoh/purejava/       unit tests (PemLoader, etc.)
@@ -55,9 +56,56 @@ Or run the platform helpers (they use `target/classes`, so
 runPub.bat    [endpoint] [key] [message] [count] [interval-ms]
 runSub.bat    [endpoint] [keyExpr] [timeout-seconds]
 runScout.bat  [mode] [interval-ms] [roles-csv] [timeout-seconds]
+runTlsPub.bat [keyExpr] [count] [interval-ms] [--flag=value ...] # mTLS + QoS
+                                                 # cert paths hard-wired in the .bat
 runTlsSub.bat [keyExpr] [timeout-seconds]        # mTLS; cert paths
                                                  # hard-wired in the .bat
 ```
+
+### mTLS publisher with QoS
+
+`runTlsPub.bat` (and the class it wraps, `ZenohJavaTlsPub`) connects
+to a Zenoh router over TLS with client-certificate authentication,
+reads the CA root, client certificate, and client key from PEM files,
+and publishes a fixed number of messages to a key expression at a
+configurable interval.
+
+QoS is set through optional named flags. Leave them off and the
+sample emits byte-identical wire output to the pre-QoS client (no QoS
+extension at all). Add them to set a publisher-scope priority,
+congestion control, or the Express bit:
+
+```
+runTlsPub.bat demo/hello 10 500
+runTlsPub.bat skylord/tracks 20 250 --priority=real_time
+runTlsPub.bat skylord/cmd 1 0 --priority=control --express
+runTlsPub.bat bulk/dump 1 0 --priority=background --congestion=block
+```
+
+The shipped `.bat` is hard-wired to the GOAT NET onboarding certs +
+router (`tls/100.64.165.203:7447`); to point it elsewhere, either edit
+the `set ROUTER=` / `set CERTDIR=` / `set CA=` / `set CERT=` /
+`set KEY=` lines at the top of the batch file, or invoke the class
+directly with all four required positional arguments plus the
+optional ones:
+
+```
+java -cp target/classes sample.zenoh.ZenohJavaTlsPub ^
+  tls/host:port ^
+  path\to\rootCa.pem ^
+  path\to\client-cert.pem ^
+  path\to\client-key.pem ^
+  [keyExpr] [count] [interval-ms] ^
+  [--priority=<name>] [--congestion=<drop|block>] [--express] ^
+  [--auto-timestamp] [--node-id=<u32>]
+```
+
+Hostname verification is disabled in the sample for the same reason as
+`ZenohJavaTlsSub` (see below): the typical field endpoint is an IP
+where the router's cert only lists hostnames as SANs. Trust is still
+anchored to the CA root.
+
+Pairs with `runTlsSub.bat` for a quick end-to-end mTLS smoke test.
 
 ### mTLS subscriber + topic discovery
 

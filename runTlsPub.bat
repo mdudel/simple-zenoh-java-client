@@ -51,6 +51,7 @@ for %%A in (%*) do (
 
 set ROUTER=tls/100.64.165.203:7447
 set CERTDIR=D:\GOAT
+set CA=%CERTDIR%\efdi-ca-root.pem
 set CERT=%CERTDIR%\996dfb6c880346559dff117458d27b66-cert.pem
 set KEY=%CERTDIR%\996dfb6c880346559dff117458d27b66-key.pem
 
@@ -102,8 +103,8 @@ echo Hard-wired to the GOAT NET onboarding certs + router:
 echo   ROUTER  = tls/100.64.165.203:7447
 echo   CERTDIR = D:\GOAT
 echo   CA      = %%CERTDIR%%\efdi-ca-root.pem
-echo   CERT    = %%CERTDIR%%\0472940bda1695cb078cd8e927b7afed-cert.pem
-echo   KEY     = %%CERTDIR%%\0472940bda1695cb078cd8e927b7afed-key.pem
+echo   CERT    = %%CERTDIR%%\996dfb6c880346559dff117458d27b66-cert.pem
+echo   KEY     = %%CERTDIR%%\996dfb6c880346559dff117458d27b66-key.pem
 echo.
 echo USAGE:
 echo   runTlsPub.bat [-h ^| --help ^| /?]

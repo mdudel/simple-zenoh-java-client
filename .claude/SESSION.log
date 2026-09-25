@@ -1,0 +1,35 @@
+# Session Log
+
+Cross-machine continuity log for Claude Code sessions on this project.
+This file is tracked in git so it can be synced between laptops (commit + push / pull).
+
+Newest entries at the top. Each entry: date, machine (optional), summary of
+what was done, decisions made, and what's next.
+
+---
+
+## 2026-09-25
+- Added project-level and global (`~/.claude/CLAUDE.md`) notes: how to
+  reauthenticate with Google (`gcloud auth login` +
+  `gcloud auth application-default login`), and a documentation style
+  rule (no em-dashes, write in simple, clear, complete sentences).
+- User asked for a TLS publisher sample with cert/key/trust store,
+  endpoint, topic, and QoS. Found `ZenohJavaTlsPub.java` and
+  `runTlsPub.bat` already implement all of this (added in an earlier
+  session, commit 7a5094d) but were never documented in README.md or
+  API.md.
+- Fixed a real bug in `runTlsPub.bat`: the `set CA=` line was dropped
+  in commit d2f1ca4 ("changed cert path"), so the CA root path being
+  passed to the Java sample was empty. Restored it and corrected the
+  stale cert/key hash in the `--help` text.
+- Documented `ZenohJavaTlsPub` / `runTlsPub.bat` in README.md (Layout
+  tree, Build & run block, new "mTLS publisher with QoS" section) and
+  added it to the sample list at the top of API.md.
+- Verified with `mvn -q package` after the fix; build passes.
+- Next: nothing pending on this thread. Normal project work continues.
+
+## 2026-09-24
+- Set up `.claude/SESSION.log` (this file) and `CLAUDE.md` instructions so
+  session state/context can be carried between laptops via git.
+- Next: continue normal project work; update this log at the end of each
+  session with what changed and what's pending.

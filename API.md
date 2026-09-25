@@ -10,7 +10,9 @@ For a quick-start "just show me the code" version, see the
 [`ZenohJavaPub.java`](src/main/java/sample/zenoh/ZenohJavaPub.java),
 [`ZenohJavaSub.java`](src/main/java/sample/zenoh/ZenohJavaSub.java),
 [`ZenohJavaScout.java`](src/main/java/sample/zenoh/ZenohJavaScout.java),
-and [`ZenohJavaTlsSub.java`](src/main/java/sample/zenoh/ZenohJavaTlsSub.java)
+[`ZenohJavaTlsPub.java`](src/main/java/sample/zenoh/ZenohJavaTlsPub.java)
+(mTLS publisher with QoS support), and
+[`ZenohJavaTlsSub.java`](src/main/java/sample/zenoh/ZenohJavaTlsSub.java)
 (mTLS subscriber + topic-discovery mode).
 
 ---
