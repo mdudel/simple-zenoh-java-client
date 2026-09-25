@@ -246,7 +246,21 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
         lastSendMs.set(System.currentTimeMillis());
     }
 
-    /** Publish a UTF-8 string with the Zenoh string encoding tag. */
+    /**
+     * Publish a string encoded as UTF-8 bytes.
+     *
+     * <p>This is a convenience wrapper over {@link #publish(String, byte[])}
+     * and behaves identically to it in every other respect, including the
+     * publisher-scope QoS, auto-timestamp, and node id defaults.</p>
+     *
+     * <p>No Zenoh encoding tag is set. The payload goes out with
+     * {@link Encoding#EMPTY}, which omits the Encoding field from the wire
+     * entirely rather than marking the message as
+     * {@link Encoding#ID_ZENOH_STRING}. Subscribers therefore see raw bytes
+     * and must know to interpret them as UTF-8. This matches the behaviour
+     * of every other publish path on this class; there is currently no
+     * overload that sets a non-empty Encoding.</p>
+     */
     public void publishString(String subKey, String payload) throws IOException {
         publish(subKey, payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
