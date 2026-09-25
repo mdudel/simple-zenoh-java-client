@@ -8,6 +8,37 @@ what was done, decisions made, and what's next.
 
 ---
 
+## 2026-09-25 (publisher docs)
+- Expanded README's "Publisher: core sample code" section. Kept the
+  minimal example, added an "Every builder parameter" subsection that
+  sets all 13 builder options (grouped: connection / TLS+mTLS /
+  publisher-scope QoS defaults, with each default in a comment), shows
+  all 6 publish forms, and is followed by a builder reference table
+  (method, default, notes) plus the 8 Priority and 2 CongestionControl
+  values.
+- Verification approach worth repeating: I did NOT hand-verify the API
+  surface from reading the source. I wrote the README example out to a
+  scratch .java file and compiled it against `target/classes` with
+  JDK 21. Exit 0, so every method name, signature and overload in the
+  README provably exists. Cheap, and it catches the doc-drift class of
+  bug that the javadoc workflow breakage was an instance of.
+- Fixed a real doc inaccuracy found while doing this: `publishString`
+  in `PureJavaZenohPublisher.java` was documented as publishing "with
+  the Zenoh string encoding tag", but it delegates to
+  `publish(subKey, bytes)` which passes `Encoding.EMPTY` (id 0, and
+  the Encoding field is omitted from the wire entirely). It never set
+  `ID_ZENOH_STRING`. Rewrote the javadoc to state what it actually
+  does: UTF-8 bytes, no encoding tag, subscribers must know to decode
+  as UTF-8. Chose to fix the DOC rather than the behaviour, because
+  changing it to emit ID_ZENOH_STRING would alter the wire output and
+  break the "byte-identical to the pre-QoS client" property the whole
+  class is careful to preserve. If a future session wants a real
+  encoding tag, add a new overload, do not change this one.
+- Also removed the last em-dash in README.md (line 86, mTLS section),
+  per the global documentation style rule.
+- Verified with `mvn -q -o package` (exit 0) and a javadoc run (exit 0,
+  no new warnings on the edited class).
+
 ## 2026-09-25 (javadoc CI fix)
 - Note on dates: the three entries below labelled `2026-09-26` actually
   happened on 2026-09-25 (confirmed against `git log --date=short`).

@@ -83,7 +83,8 @@ The priority (one of `control`, `real_time`, `interactive_high`,
 be set through `--qos=<name>` or the older `--priority=<name>` (same
 names, `--qos` wins if both are given), or falls back to the batch
 file's own `QOS` default (`data`, which composes to `Qos.DEFAULT` and
-emits no QoS extension at all — byte-identical to the pre-QoS client).
+emits no QoS extension at all, so the wire output is byte-identical to
+the pre-QoS client).
 Congestion control and the Express bit are separate flags:
 
 ```
@@ -164,6 +165,9 @@ the scout section of [API.md](API.md).
 
 ## Publisher: core sample code
 
+The minimal case needs two builder values, an endpoint and a key
+expression. Everything else has a working default.
+
 ```java
 PureJavaZenohPublisher zenohPublisher = PureJavaZenohPublisher.builder()
         .connectEndpoint("tcp/localhost:7447")
@@ -177,6 +181,93 @@ zenohPublisher.publish("hello from pure-Java"
 
 zenohPublisher.stop();           // clean CLOSE (or use try-with-resources)
 ```
+
+### Every builder parameter
+
+This example sets every option the builder exposes. You would not
+normally set all of them at once, because most defaults are already
+correct. It is shown this way so the full surface is visible in one
+place.
+
+```java
+try (PureJavaZenohPublisher pub = PureJavaZenohPublisher.builder()
+
+        // ---- connection ------------------------------------------
+        .connectEndpoint("tls/router.example.com:7447")  // required
+        .keyExpr("zenoh-client/test-topic")              // default: demo/example/zenoh-java
+        .org("996dfb6c880346559dff117458d27b66")         // optional key prefix
+        .leaseMs(10_000L)                                // default: 10000
+
+        // ---- TLS and mTLS ----------------------------------------
+        // Only consulted for tls/ and wss/ endpoints.
+        .rootCaCertPath("D:\\GOAT\\efdi-ca-root.pem")    // default: JVM trust store
+        .clientCertPath("D:\\GOAT\\client-cert.pem")     // default: none (no mTLS)
+        .clientKeyPath("D:\\GOAT\\client-key.pem")       // default: none (no mTLS)
+        .keyStorePassword("changeit".toCharArray())      // PKCS12 only; default: changeit
+        .verifyHostname(false)                           // default: true
+
+        // ---- publisher-scope QoS defaults ------------------------
+        .defaultQos(new Qos(Priority.DATA_HIGH,
+                            CongestionControl.BLOCK,
+                            true))                       // default: Qos.DEFAULT
+        .autoTimestamp(true)                             // default: false
+        .originNodeId(42L)                               // default: 0 (u32 range)
+
+        .build()) {
+
+    pub.start();
+
+    byte[] payload = "hello from pure-Java".getBytes(StandardCharsets.UTF_8);
+
+    // Publish to the effective key, using the publisher defaults above.
+    pub.publish(payload);
+
+    // Append a sub-key: <org>/<keyExpr>/alerts
+    pub.publish("alerts", payload);
+
+    // Override just the priority for one message.
+    pub.publish("alerts", payload, Priority.CONTROL);
+
+    // Override the whole QoS triple for one message.
+    pub.publish("alerts", payload, Qos.of(Priority.BACKGROUND));
+
+    // Full control: QoS, Timestamp, and NodeId, all explicit.
+    pub.publish("alerts", payload, Qos.DEFAULT, null, 0L);
+
+    // UTF-8 string convenience wrapper.
+    pub.publishString("alerts", "hello from pure-Java");
+}
+```
+
+Builder reference:
+
+| Method | Default | Notes |
+| --- | --- | --- |
+| `connectEndpoint(String)` | none, required | `tcp/`, `tls/`, `ws/`, or `wss/` followed by `host:port`. Full `ws://` and `wss://` URIs with a path are also accepted. |
+| `keyExpr(String)` | `demo/example/zenoh-java` | The key to publish on, before any `org` prefix. |
+| `org(String)` | empty | Prefix joined to `keyExpr` with a single slash. Read the result with `getEffectiveKeyExpr()`. |
+| `leaseMs(long)` | `10000` | Lease proposed to the router during the handshake. |
+| `rootCaCertPath(String)` | empty | CA root as PEM (`.pem`, `.crt`, `.cer`) or PKCS12 (`.p12`, `.pfx`). When empty, the JVM default trust store is used. |
+| `clientCertPath(String)` | empty | Client certificate for mTLS. |
+| `clientKeyPath(String)` | empty | Client private key for mTLS. For PEM you must set both this and `clientCertPath`. For PKCS12 set both to the same `.p12` file. |
+| `keyStorePassword(char[])` | `changeit` | Used for PKCS12 stores only. PEM files need no password. |
+| `verifyHostname(boolean)` | `true` | Set to `false` when connecting to a bare IP whose server certificate lists only hostnames as SANs. Trust is still anchored to the CA root. |
+| `defaultQos(Qos)` | `Qos.DEFAULT` | Priority, congestion control, and the Express bit, applied to every publish call unless overridden. |
+| `defaultPriority(Priority)` | `Priority.DATA` | Convenience wrapper for `defaultQos(Qos.of(p))`. |
+| `autoTimestamp(boolean)` | `false` | When true, every message carries a fresh timestamp built from the wall clock and the session ZenohId. |
+| `originNodeId(long)` | `0` | Routing origin as a u32. Values outside `0..4294967295` throw `IllegalArgumentException`. |
+
+`Priority` has eight values, listed here from highest to lowest:
+`CONTROL`, `REAL_TIME`, `INTERACTIVE_HIGH`, `INTERACTIVE_LOW`,
+`DATA_HIGH`, `DATA`, `DATA_LOW`, `BACKGROUND`. `CongestionControl` has
+two, `DROP` and `BLOCK`.
+
+The QoS, timestamp, and node-id settings are all opt-in. Leaving them
+at their defaults suppresses the corresponding wire extension entirely,
+so the bytes on the wire are identical to those produced before QoS
+support was added. Note that `Qos.isDefault()` compares by value, so
+explicitly setting `Priority.DATA` with `CongestionControl.DROP` and
+Express off also emits no extension.
 
 ## Subscriber: core sample code
 
