@@ -12,11 +12,12 @@ name: Javadoc HTML
 #
 # After that, every push to main rebuilds the docs; ~30-60 s per run.
 #
-# Note: this project uses the NetBeans-generated Ant harness locally,
-# but the harness assumes an IDE-supplied ${platform.active} property
-# that isn't set on a fresh CI runner. Rather than mock that in, we
-# invoke the `javadoc` CLI directly on src/**/*.java - same tool the
-# `ant javadoc` target ultimately runs, one fewer moving part.
+# Note: this project is a standard Maven build, but we invoke the
+# `javadoc` CLI directly rather than going through maven-javadoc-plugin.
+# The client has zero runtime dependencies, so there is no classpath to
+# resolve and no reason to pay for a dependency download on every run.
+# Keep the -sourcepath and -subpackages values below in sync with the
+# Maven source layout (src/main/java) if packages are ever renamed.
 
 on:
   push:
@@ -52,7 +53,7 @@ jobs:
 
           # Two package trees to document:
           #   io.mdudel.zenoh.purejava.*  - the pure-Java client
-          #   sample.nb.ant.zenoh.*        - the runnable Pub/Sub/Scout samples
+          #   sample.zenoh.*              - the runnable Pub/Sub/Scout/TLS samples
           # javadoc will discover the package structure from the -sourcepath
           # + explicit -subpackages, so no manual file list needed.
           #
@@ -60,12 +61,13 @@ jobs:
           # renamed classes (harmless warnings, present in a couple of
           # message classes ported from the sibling repo).
           #
-          # -encoding UTF-8 matches nbproject/project.properties
-          # source.encoding=UTF-8; the sandbox has bitten us on this before.
+          # -encoding UTF-8 matches the pom's
+          # project.build.sourceEncoding=UTF-8; the sandbox has bitten us
+          # on this before.
           javadoc \
               -d public \
-              -sourcepath src \
-              -subpackages io.mdudel.zenoh.purejava:sample.nb.ant.zenoh \
+              -sourcepath src/main/java \
+              -subpackages io.mdudel.zenoh.purejava:sample.zenoh \
               -encoding UTF-8 \
               -docencoding UTF-8 \
               -charset UTF-8 \

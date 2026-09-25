@@ -8,6 +8,59 @@ what was done, decisions made, and what's next.
 
 ---
 
+## 2026-09-25 (javadoc CI fix)
+- Note on dates: the three entries below labelled `2026-09-26` actually
+  happened on 2026-09-25 (confirmed against `git log --date=short`).
+  They were misdated when written. Left the headings alone rather than
+  rewriting history in this file; just be aware the ordering is still
+  correct even though one date is not.
+- Diagnosed the failing "Javadoc HTML" GitHub Actions workflow
+  (`build-and-deploy` failing in ~6 seconds on every push to main).
+  Cause: `.github/workflows/javadoc.yml` was written at commit
+  `baf918b`, BEFORE the 2026-07-29 Ant/NetBeans-to-Maven conversion,
+  and was never updated for the new layout. It passed
+  `-sourcepath src` (sources now live in `src/main/java`; plain `src`
+  only holds `main/` and `test/`) and
+  `-subpackages io.mdudel.zenoh.purejava:sample.nb.ant.zenoh` (that
+  sample package was renamed to `sample.zenoh`). javadoc exits 2 with
+  "No source files for package io.mdudel.zenoh.purejava" before doing
+  any work, hence the near-instant failure. Nothing was wrong with the
+  runner, the JDK setup, the Pages configuration, or the deploy step.
+- Fixed: `-sourcepath src/main/java` and
+  `-subpackages io.mdudel.zenoh.purejava:sample.zenoh`. Also replaced
+  the stale header comment (it described the NetBeans Ant harness and
+  its IDE-supplied `${platform.active}` property) and the stale
+  `nbproject/project.properties` encoding reference with the Maven
+  equivalents, and added a reminder to keep these paths in sync if
+  packages move again.
+- Verified locally with JDK 21 rather than by hand-reading: the OLD
+  arguments reproduce the exact CI error and exit 2, the NEW arguments
+  exit 0 and emit a complete doc tree. Remaining output is only
+  pre-existing non-fatal warnings (unresolved `@link` targets, and raw
+  `<`/`&` characters inside the wire-format ASCII diagrams).
+- Lesson worth carrying: the Maven conversion left other stale
+  references behind. If anything else still says `src/` without
+  `main/java`, or `sample.nb.ant.zenoh`, or mentions the Ant harness,
+  treat it as suspect.
+
+## 2026-09-26 (later still)
+- Fixed the same cmd.exe "=" delimiter bug in `runPub.bat` (previously
+  just forwarded `%*` raw with zero parsing, so its own documented
+  examples like `--priority=real_time` would have hit the bug too).
+  Added a shift-loop that re-pairs --priority/--congestion/--node-id
+  with their value regardless of split (cmd.exe two-token) or quoted
+  (single-token) form, and the same guarded true/false/1/0 handling
+  for --express/--auto-timestamp used in runTlsPub.bat, so a bare
+  --express doesn't swallow the following positional endpoint arg.
+  runPub.bat has no --topic/--qos (ZenohJavaPub doesn't support them),
+  so this was simpler than runTlsPub.bat's fix -- one pass, no
+  precedence resolution needed.
+  Verified with `mvn -q package`; hand-traced all 4 documented examples
+  plus the quoted single-token form.
+  Did not touch README (it only lists runPub.bat's positional usage,
+  no flag/QoS claims to correct).
+- Committed and pushed together with the javadoc CI fix above.
+
 ## 2026-09-26 (later)
 - Root-caused a real bug the user hit: `runTlsPub.bat --qos=control`
   failed with "Unknown flag: --qos" (no "=control" in the error text).
