@@ -8,6 +8,34 @@ what was done, decisions made, and what's next.
 
 ---
 
+## 2026-09-25 (later still)
+- Embedded the resolved QoS into each published payload in
+  `ZenohJavaTlsPub.java` (e.g. `hello #1 from pure-Java (mTLS)
+  [qos=DEFAULT (no ext)]`), so a subscriber sees what QoS a message
+  was sent with, not just the publisher's console banner. Reused the
+  same `qosLabel` string for both the banner and the payload.
+  Verified with `mvn -q package`.
+- Updated README's mTLS publisher section to mention this.
+- Committed and pushed all outstanding work from this session
+  (--topic flag + QoS-in-payload + doc updates).
+
+## 2026-09-25 (later)
+- Added `--topic=<keyExpr>` support to `runTlsPub.bat`, plus a batch-level
+  `TOPIC` default (`996dfb6c880346559dff117458d27b66/zenoh-client/test-topic`).
+- Rewrote the arg-handling in `runTlsPub.bat`: replaced the old
+  `:no_args`/`:one_arg`/`:two_args`/`:three_or_more_args` positional
+  dispatch with a two-pass parser (a non-destructive scan for
+  `--topic=`, then a shift-loop that fills keyExpr/count/interval or
+  just count/interval when `--topic` is present). This was necessary
+  because `--topic` can appear anywhere in the args and must not be
+  forwarded to the Java sample (it has no `--topic` flag of its own).
+  Precedence: `--topic` flag > positional keyExpr > `TOPIC` default.
+  Verified by hand-tracing the parser logic (couldn't exec cmd.exe
+  directly from this sandboxed Bash tool to test interactively).
+- Updated README.md's "mTLS publisher with QoS" section and the
+  in-file REM/help text to document the new flag and precedence rule.
+- Not yet committed/pushed — waiting on user confirmation.
+
 ## 2026-09-25
 - Added project-level and global (`~/.claude/CLAUDE.md`) notes: how to
   reauthenticate with Google (`gcloud auth login` +

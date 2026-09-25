@@ -200,6 +200,7 @@ public class ZenohJavaTlsPub {
 
         // ----- 4. Banner -----------------------------------------------
         String pad = "                     ";
+        String qosLabel = qos.isDefault() ? "DEFAULT (no ext)" : qos.toString();
         System.out.println("[zenoh-java-tls-pub] endpoint=" + endpoint
                 + "\n" + pad + "key=" + key
                 + "\n" + pad + "count=" + count
@@ -208,7 +209,7 @@ public class ZenohJavaTlsPub {
                 + "\n" + pad + "cert=" + clientCertPath
                 + "\n" + pad + "key(pem)=" + clientKeyPath
                 + "\n" + pad + "verifyHostname=false (typical for IP-only endpoints)"
-                + "\n" + pad + "qos=" + (qos.isDefault() ? "DEFAULT (no ext)" : qos)
+                + "\n" + pad + "qos=" + qosLabel
                 + "\n" + pad + "autoTimestamp=" + autoTimestamp
                 + "\n" + pad + "nodeId=" + nodeId
         );
@@ -238,7 +239,7 @@ public class ZenohJavaTlsPub {
             System.out.println("[zenoh-java-tls-pub] session OPEN (mTLS)");
 
             for (int i = 1; i <= count; i++) {
-                String payload = "hello #" + i + " from pure-Java (mTLS)";
+                String payload = "hello #" + i + " from pure-Java (mTLS) [qos=" + qosLabel + "]";
                 zenohPublisher.publish(payload.getBytes(StandardCharsets.UTF_8));
                 System.out.println("[zenoh-java-tls-pub] "
                         + i + "/" + count + " -> '" + payload + "'"

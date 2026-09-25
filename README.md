@@ -56,8 +56,8 @@ Or run the platform helpers (they use `target/classes`, so
 runPub.bat    [endpoint] [key] [message] [count] [interval-ms]
 runSub.bat    [endpoint] [keyExpr] [timeout-seconds]
 runScout.bat  [mode] [interval-ms] [roles-csv] [timeout-seconds]
-runTlsPub.bat [keyExpr] [count] [interval-ms] [--flag=value ...] # mTLS + QoS
-                                                 # cert paths hard-wired in the .bat
+runTlsPub.bat [keyExpr] [count] [interval-ms] [--topic=<keyExpr>] [--flag=value ...]
+                                                 # mTLS + QoS; cert paths hard-wired in the .bat
 runTlsSub.bat [keyExpr] [timeout-seconds]        # mTLS; cert paths
                                                  # hard-wired in the .bat
 ```
@@ -70,14 +70,26 @@ reads the CA root, client certificate, and client key from PEM files,
 and publishes a fixed number of messages to a key expression at a
 configurable interval.
 
+The topic (key expression) can be set three ways, in order of
+priority: the `--topic=<keyExpr>` flag, the positional `keyExpr`
+argument, or the batch file's own `TOPIC` default
+(`996dfb6c880346559dff117458d27b66/zenoh-client/test-topic`) when
+neither is given. When `--topic` is used, the positional slots shift:
+the first two positional arguments become `count` and `interval-ms`
+instead of `keyExpr` and `count`.
+
 QoS is set through optional named flags. Leave them off and the
 sample emits byte-identical wire output to the pre-QoS client (no QoS
 extension at all). Add them to set a publisher-scope priority,
-congestion control, or the Express bit:
+congestion control, or the Express bit. The resolved QoS also appears
+in each published message body (e.g. `hello #1 from pure-Java (mTLS)
+[qos=DEFAULT (no ext)]`) so a subscriber printing payloads can see
+what QoS the message was sent with, not just the console banner on
+the publisher side:
 
 ```
 runTlsPub.bat demo/hello 10 500
-runTlsPub.bat skylord/tracks 20 250 --priority=real_time
+runTlsPub.bat --topic=skylord/tracks 20 250 --priority=real_time
 runTlsPub.bat skylord/cmd 1 0 --priority=control --express
 runTlsPub.bat bulk/dump 1 0 --priority=background --congestion=block
 ```
@@ -85,9 +97,9 @@ runTlsPub.bat bulk/dump 1 0 --priority=background --congestion=block
 The shipped `.bat` is hard-wired to the GOAT NET onboarding certs +
 router (`tls/100.64.165.203:7447`); to point it elsewhere, either edit
 the `set ROUTER=` / `set CERTDIR=` / `set CA=` / `set CERT=` /
-`set KEY=` lines at the top of the batch file, or invoke the class
-directly with all four required positional arguments plus the
-optional ones:
+`set KEY=` / `set TOPIC=` lines at the top of the batch file, or
+invoke the class directly with all four required positional arguments
+plus the optional ones:
 
 ```
 java -cp target/classes sample.zenoh.ZenohJavaTlsPub ^
