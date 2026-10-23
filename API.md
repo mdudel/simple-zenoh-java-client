@@ -52,6 +52,10 @@ TCP/TLS session. See [Builder options: Scout](#builder-options-scout).
 | `keyStorePassword(char[])`                | `"changeit"`                   | Password for PKCS12 trust and key stores. Ignored for PEM. |
 | `verifyHostname(boolean)`                 | `true`                         | Verify the router's cert SAN against the endpoint host. Turn off ONLY for lab/dev. |
 | `leaseMs(long)`                           | `ZenohSession.DEFAULT_LEASE_MS`| Session lease (keepalive interval). |
+| `handshakeTimeoutMs(int)`                 | `10000`                        | Socket connect, TLS handshake, and Zenoh INIT/OPEN timeout in milliseconds. |
+| `autoReconnect(boolean)`                  | `true`                         | Automatically reconnect in the background after an unexpected drop or missed router keepalives. |
+| `reconnectInitialDelayMs(long)`           | `500`                          | Initial backoff delay before the first reconnect attempt. |
+| `reconnectMaxDelayMs(long)`               | `30000`                        | Cap on exponential backoff between reconnect attempts. |
 | `defaultQos(Qos)`                         | `Qos.DEFAULT` (no ext emitted) | Publisher-scope default `Qos`; applies to every `publish(...)` unless overridden per call. |
 | `defaultPriority(Priority)`               | `Priority.DATA`                | Sugar for `defaultQos(Qos.of(p))`. |
 | `autoTimestamp(boolean)`                  | `false`                        | If `true`, stamp every publish with a fresh `Timestamp` (`now()` + session ZID). *Blocked by upstream #7 for current-date wall clock values; safe for hand-picked timestamps.* |
@@ -129,10 +133,12 @@ runPub.bat --priority=background --congestion=block tcp/[::1]:7447 bulk/dump 1
 
 `PureJavaZenohSubscriber.builder()`:
 
-The connection and TLS options are identical to the publisher **minus
-`keyExpr`** (the subscriber takes the key expression per-subscription,
-not at build time). Same defaults, same `org` prefix behaviour. The
-three `recordTopics*` options have no publisher equivalent.
+The connection, TLS, and reconnect options are identical to the
+publisher **minus `keyExpr`** (the subscriber takes the key expression
+per-subscription, not at build time). Same defaults, same `org` prefix
+behaviour. On reconnect, active subscriptions and topic discovery
+interests are automatically re-declared on the new session. The three
+`recordTopics*` options have no publisher equivalent.
 
 | Method                                    | Default                        | Purpose |
 |-------------------------------------------|--------------------------------|---------|
@@ -144,6 +150,10 @@ three `recordTopics*` options have no publisher equivalent.
 | `keyStorePassword(char[])`                | `"changeit"`                   | PKCS12 password. |
 | `verifyHostname(boolean)`                 | `true`                         | Hostname verification. |
 | `leaseMs(long)`                           | `ZenohSession.DEFAULT_LEASE_MS`| Session lease. |
+| `handshakeTimeoutMs(int)`                 | `10000`                        | Socket connect, TLS handshake, and Zenoh INIT/OPEN timeout in milliseconds. |
+| `autoReconnect(boolean)`                  | `true`                         | Automatically reconnect in the background and re-declare open subscriptions and discovery interests. |
+| `reconnectInitialDelayMs(long)`           | `500`                          | Initial backoff delay before the first reconnect attempt. |
+| `reconnectMaxDelayMs(long)`               | `30000`                        | Cap on exponential backoff between reconnect attempts. |
 | `recordTopics(boolean)`                   | `false`                        | Record every topic seen for the life of the subscriber; read it back with `recordedTopics()`. |
 | `recordTopicsPattern(String)`             | `"**"`                         | Key expression the recorder watches. Ignored unless `recordTopics` is set. |
 | `recordTopicTraffic(boolean)`             | `true`                         | Whether the recorder also subscribes, to catch keys carrying data that nobody declared. Ignored unless `recordTopics` is set. |
@@ -411,6 +421,8 @@ instance. Use whichever fits your UI model, or use both.
 | `getLastSendMs()`                         | `long`   | `System.currentTimeMillis()` of last successful publish. |
 | `getEffectiveKeyExpr()`                   | `String` | Result of `KeyExpr.resolveKey(org, keyExpr)`. |
 | `isActive()`                              | `boolean`| `true` when the session state is `OPEN`. |
+| `isReconnecting()`                        | `boolean`| `true` while the background reconnect loop is trying to restore a lost session. |
+| `getReconnectCount()`                     | `long`   | Number of times the client has successfully reconnected after a drop. |
 | `getLastError()`                          | `String` | Last recorded failure message, or `null`. |
 | `stop()` / `close()`                      | `void`   | Sends CLOSE, tears down transport. Safe to call more than once (no-op after the first). Implements `AutoCloseable`. |
 
@@ -524,9 +536,14 @@ try (PureJavaZenohSubscriber.TopicDiscovery td =
   To catch publishers, subscribe to `**` and observe `Sample.key()`.
 - Sugar: `discoverAllTopics(listener)` is exactly
   `discoverTopics("**", listener)`.
-- This is the low-level callback API. If you want a merged list that
-  also covers queryables, liveliness tokens, and observed traffic, go
-  to `listTopics` or `topics` below.
+- Need a synchronous one-shot snapshot of declared subscribers right
+  now? Call `listTopicsNow(pattern, timeoutMs)` or
+  `listAllTopicsNow(timeoutMs)`. It sends an `INTEREST` in `CURRENT`
+  mode, collects every `DeclareSubscriber` until `DeclareFinal` (or
+  timeout), and returns `List<Topic>`.
+- This is the low-level subscriber-declaration API. If you want a
+  merged list that also covers queryables, liveliness tokens, and
+  observed traffic, go to `listTopics` or `topics` below.
 
 ### Topic registry (a list of active topics, as data)
 
@@ -715,10 +732,10 @@ has returned:
 
 ## What is NOT (yet) exposed on the client class
 
-For advanced TLS settings (enabled protocols, cipher suites, handshake
-timeout, PKCS11) you drop below the client class and build a
-`TlsConfig` directly, then construct `TlsTransport` / `WsTransport`
-by hand. See `TlsConfig.Builder` in the source
+For advanced TLS settings (enabled protocols, cipher suites, PKCS11)
+you drop below the client class and build a `TlsConfig` directly, then
+construct `TlsTransport` / `WsTransport` by hand. See
+`TlsConfig.Builder` in the source
 (`src/main/java/io/mdudel/zenoh/purejava/transport/TlsConfig.java`); the
 builder methods there include `enabledProtocols(...)`,
 `enabledCipherSuites(...)`, `handshakeTimeoutMs(...)`,
@@ -767,21 +784,20 @@ instead.
   backends, no replication protocol, no eventual-consistency alignment.
 - **Attachments** on publications (per-sample metadata beyond payload
   + encoding).
-- **Priority, congestion-control, and reliability settings** on
-  publish: samples go with router defaults.
+- **Reliability settings** on publish / subscribe: samples go with
+  router defaults (priority and congestion-control ARE supported via
+  `Qos`).
 - **Batching / compression**: samples are sent one PUSH per call;
   the official client can batch and optionally compress.
 - **Access-control / authentication tokens** beyond mTLS: no
   username/password auth, no OIDC.
-- **Session recovery / auto-reconnect**: if the transport dies you
-  get an `IOException` on the next publish and must call `stop()` +
-  `start()` yourself.
 - **Shared-memory transport**: the SHM optimisation is native-only.
 
 **Wire-protocol coverage:**
 - Implements Zenoh 1.x INIT / OPEN / CLOSE / KEEPALIVE / FRAME / PUSH /
-  DECLARE (subscribers only) / UNDECLARE / INTEREST (for topic
-  discovery). Everything else is out of scope.
+  DECLARE (subscribers, plus decoding queryable and token declarations
+  for discovery) / UNDECLARE / INTEREST (for topic discovery).
+  Everything else is out of scope.
 - Extension fields on messages are decoded when needed and otherwise
   passed through unchanged; unknown extensions do not fail parsing.
 
@@ -798,5 +814,3 @@ instead.
 | QUIC / UDP session transport                    | ❌          | ✅             |
 | Peer or router mode                             | ❌          | ✅             |
 | Queryables + get queries                        | ❌          | ✅             |
-| Storage / replication                           | ❌          | ✅             |
-| Shared-memory transport                         | ❌          | ✅             |

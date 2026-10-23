@@ -10,25 +10,37 @@
 package sample.zenoh;
 
 import io.mdudel.zenoh.purejava.PureJavaZenohSubscriber;
+import io.mdudel.zenoh.purejava.TopicInfo;
+import io.mdudel.zenoh.purejava.TopicRegistry;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * mTLS subscriber sample: connects to a Zenoh router over TLS with
- * client certificate authentication, subscribes to a key expression,
- * and prints every unique key it sees (a pragmatic "list topics" for
- * a bus that has no topic registry).
+ * client certificate authentication, subscribes to a key expression to
+ * print live incoming samples, and enables {@link TopicRegistry}
+ * recording ({@link PureJavaZenohSubscriber.Builder#recordTopics(boolean)})
+ * to assemble a complete topic-discovery summary on shutdown.
  *
- * <p>Zenoh, unlike MQTT or Kafka, has <b>no</b> topic list primitive.
- * Keys only exist while something is publishing on them. This sample
- * subscribes to a wildcard key expression, tracks every unique key it
- * observes during the run, and prints a summary on shutdown. Any key
- * that stayed silent during the window will not appear -- that is the
- * best a subscriber can do without a topic-registry service on the
- * router side.
+ * <p>Zenoh, unlike MQTT or Kafka, has <b>no</b> authoritative topic list
+ * primitive. This sample combines two mechanisms:
+ * <ul>
+ *   <li>Continuous {@link TopicRegistry} recording via
+ *       {@code recordTopics(true)}, which merges router
+ *       {@code INTEREST}/{@code DECLARE} declarations (subscribers,
+ *       queryables, and liveliness tokens) with observed traffic and
+ *       tags each {@link TopicInfo} with its provenance
+ *       ({@link TopicInfo#sources()}).</li>
+ *   <li>A live {@code subscribeAndConsume} callback that prints each
+ *       incoming payload and logs a {@code [NEW TOPIC]} line the first
+ *       time data arrives on a key.</li>
+ * </ul>
  *
  * <p>Positional CLI arguments (all optional, in order):
  * <ol>
@@ -59,11 +71,10 @@ import java.util.concurrent.TimeUnit;
  * @implNote The private key file MUST be unencrypted. If yours is
  * password-protected, convert it once with:
  * {@code openssl pkcs8 -topk8 -nocrypt -in enc.pem -out plain.pem}
- * @implNote The topic-discovery counter uses a
- * {@link ConcurrentSkipListSet} so ordered summary printing on
- * shutdown is O(n log n) sorted-natural without a second sort pass.
- * The subscribe callback runs on the session's reader thread; the
- * set is thread-safe by construction so no explicit lock is needed.
+ * @implNote The live-traffic key set uses a
+ * {@link ConcurrentSkipListSet} so first-seen detection on the session's
+ * reader thread is thread-safe without an explicit lock, and serves as a
+ * fallback summary if the router ACL refuses discovery interest.
  */
 public class ZenohJavaTlsSub {
 
@@ -148,17 +159,29 @@ public class ZenohJavaTlsSub {
                         ? "\n" + pad + "timeout=" + timeoutSeconds + "s"
                         : "\n" + pad + "(Ctrl-C to stop)"));
 
-        // Track unique keys observed during the run. Sorted so the
-        // final summary reads naturally. Thread-safe because the
-        // subscribe callback runs on the reader thread and the
-        // shutdown-hook thread reads the same set.
+        // Track unique keys observed via live samples during the run,
+        // and hold a reference to the subscriber / recorded TopicInfo
+        // snapshot for the shutdown hook.
         Set<String> observedKeys = new ConcurrentSkipListSet<>();
+        AtomicReference<PureJavaZenohSubscriber> subRef = new AtomicReference<>();
+        AtomicReference<List<TopicInfo>> recordedSnapshotRef = new AtomicReference<>();
 
         // One-shot latch flipped by Ctrl-C / SIGTERM or the timeout.
         CountDownLatch stop = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             stop.countDown();
-            printTopicSummary(observedKeys);
+            List<TopicInfo> snapshot = recordedSnapshotRef.get();
+            if (snapshot == null) {
+                PureJavaZenohSubscriber sub = subRef.get();
+                if (sub != null && sub.isRecordingTopics()) {
+                    try {
+                        snapshot = sub.recordedTopics();
+                    } catch (IllegalStateException ignored) {
+                        snapshot = Collections.emptyList();
+                    }
+                }
+            }
+            printTopicSummary(snapshot, observedKeys);
         }));
 
         try {
@@ -168,13 +191,19 @@ public class ZenohJavaTlsSub {
             // is an IP endpoint (CGNAT / Tailscale) where the cert
             // CN/SAN will not match the connect IP. Trust is still
             // anchored to the CA root; MITM protection is intact.
+            // recordTopics(true) enables the cumulative TopicRegistry
+            // across declared subscribers, queryables, liveliness tokens,
+            // and observed traffic.
             PureJavaZenohSubscriber zenohSubscriber = PureJavaZenohSubscriber.builder()
                     .connectEndpoint(endpoint)
                     .rootCaCertPath(rootCaCertPath)
                     .clientCertPath(clientCertPath)
                     .clientKeyPath(clientKeyPath)
                     .verifyHostname(false)
+                    .recordTopics(true)
+                    .recordTopicsPattern(keyExpr)
                     .build();
+            subRef.set(zenohSubscriber);
 
             zenohSubscriber.start();
             System.out.println("[zenoh-java-tls-sub] session OPEN (mTLS)");
@@ -182,7 +211,7 @@ public class ZenohJavaTlsSub {
 
             zenohSubscriber.subscribeAndConsume(keyExpr, sample -> {
                 String key = sample.key();
-                // Print a one-line "[NEW]" the first time we see a key;
+                // Print a one-line "[NEW TOPIC]" the first time we see a key;
                 // print samples normally for everything else. Zero
                 // duplicate prints on hot-topic bursts.
                 if (observedKeys.add(key)) {
@@ -198,9 +227,14 @@ public class ZenohJavaTlsSub {
                 stop.await();
             }
 
+            if (zenohSubscriber.isRecordingTopics()) {
+                recordedSnapshotRef.set(zenohSubscriber.recordedTopics());
+            }
+            List<TopicInfo> snap = recordedSnapshotRef.get();
+            int topicCount = (snap != null && !snap.isEmpty()) ? snap.size() : observedKeys.size();
             System.out.println("[zenoh-java-tls-sub] shutting down"
                     + " (received=" + zenohSubscriber.getReceivedCount()
-                    + ", unique-topics=" + observedKeys.size() + ")");
+                    + ", unique-topics=" + topicCount + ")");
             zenohSubscriber.stop();
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
@@ -244,27 +278,34 @@ public class ZenohJavaTlsSub {
     }
 
     /**
-     * Called from the shutdown hook to print a sorted list of every
-     * key expression that received at least one sample during the run.
-     * This is the pragmatic "list topics" answer for Zenoh, which has
-     * no topic-registry primitive.
+     * Called from the shutdown hook to print the sorted list of topics
+     * recorded by the {@link TopicRegistry} (declarations plus observed
+     * traffic), or the fallback set of observed sample keys if topic
+     * recording was not active.
      */
-    private static void printTopicSummary(Set<String> observedKeys) {
+    private static void printTopicSummary(List<TopicInfo> recordedTopics, Set<String> observedKeys) {
         System.out.println();
         System.out.println("========== TOPIC DISCOVERY SUMMARY ==========");
-        if (observedKeys.isEmpty()) {
-            System.out.println("(no topics observed during the run)");
-            System.out.println("Possible reasons:");
-            System.out.println("  - no publishers active on the bus during the window");
-            System.out.println("  - subscribed key expression did not match any active keys");
-            System.out.println("  - session never fully opened (check stderr for errors)");
-        } else {
+        if (recordedTopics != null && !recordedTopics.isEmpty()) {
+            System.out.println(recordedTopics.size() + " topic(s) recorded (declarations + traffic):");
+            for (TopicInfo t : recordedTopics) {
+                System.out.printf("  %-45s %-8s %-14s %s%n",
+                        t.keyExpr(),
+                        t.active() ? "active" : "gone",
+                        t.hasTraffic() ? t.sampleCount() + " sample(s)" : "no traffic",
+                        t.sources());
+            }
+        } else if (!observedKeys.isEmpty()) {
             System.out.println(observedKeys.size() + " unique topic(s) observed:");
-            // Wrap TreeSet around ConcurrentSkipListSet snapshot for
-            // stable iteration order in the printed output.
             for (String k : new TreeSet<>(observedKeys)) {
                 System.out.println("  " + k);
             }
+        } else {
+            System.out.println("(no topics discovered or observed during the run)");
+            System.out.println("Possible reasons:");
+            System.out.println("  - no publishers, subscribers, queryables, or tokens active on the bus");
+            System.out.println("  - subscribed key expression did not match any active keys");
+            System.out.println("  - session never fully opened (check stderr for errors)");
         }
         System.out.println("=============================================");
     }

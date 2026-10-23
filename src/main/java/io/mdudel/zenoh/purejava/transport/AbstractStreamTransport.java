@@ -56,10 +56,10 @@ public abstract class AbstractStreamTransport extends AbstractTransport {
     private volatile Thread       readerThread;
 
     /**
-     * Open the underlying stream socket. Called exactly once from
-     * {@link #doConnect()}. Implementations are responsible for connect
-     * timeout, TCP tunables, TLS handshake, and any other transport-specific
-     * setup. Must return a fully connected socket.
+     * Open the underlying stream socket. Called from {@link #doConnect()}.
+     * Implementations are responsible for connect timeout, TCP tunables,
+     * TLS handshake, and any other transport-specific setup. Must return
+     * a fully connected socket.
      */
     protected abstract Socket openSocket() throws IOException;
 
@@ -69,16 +69,18 @@ public abstract class AbstractStreamTransport extends AbstractTransport {
     @Override
     protected final void doConnect() throws TransportException {
         Socket s;
+        InputStream myIn;
         try {
             s = openSocket();
             this.out    = new BufferedOutputStream(s.getOutputStream());
-            this.in     = new BufferedInputStream(s.getInputStream());
+            myIn        = new BufferedInputStream(s.getInputStream());
+            this.in     = myIn;
             this.socket = s;
         } catch (IOException e) {
             throw new TransportException(
                     "connect failed to " + describe() + ": " + e.getMessage(), e);
         }
-        Thread t = new Thread(this::readerLoop, "zenoh-" + readerThreadTag() + "-reader");
+        Thread t = new Thread(() -> readerLoop(s, myIn), "zenoh-" + readerThreadTag() + "-reader");
         t.setDaemon(true);
         this.readerThread = t;
         readerRunning.set(true);
@@ -105,30 +107,34 @@ public abstract class AbstractStreamTransport extends AbstractTransport {
 
     // ---- internals ----------------------------------------------------
 
-    private void readerLoop() {
+    private void readerLoop(Socket mySocket, InputStream myIn) {
         try {
-            while (isOpen()) {
+            while (isOpen() && this.socket == mySocket) {
                 byte[] batch;
                 try {
-                    batch = StreamFramer.readFrame(in);
+                    batch = StreamFramer.readFrame(myIn);
                 } catch (EOFException eof) {
-                    reportReaderError(eof);
+                    if (this.socket == mySocket) reportReaderError(eof);
                     return;
                 } catch (SocketException se) {
                     // Local close() shuts input which surfaces here; treat as clean.
-                    if (!isOpen()) return;
+                    if (!isOpen() || this.socket != mySocket) return;
                     reportReaderError(se);
                     return;
                 } catch (IOException ioe) {
-                    reportReaderError(ioe);
+                    if (this.socket == mySocket) reportReaderError(ioe);
                     return;
                 }
-                deliver(batch);
+                if (this.socket == mySocket) {
+                    deliver(batch);
+                }
             }
         } finally {
-            readerRunning.set(false);
-            // Any exit from the loop implies the link is down.
-            close();
+            if (this.socket == mySocket) {
+                readerRunning.set(false);
+                // Any exit from the loop implies the link is down.
+                close();
+            }
         }
     }
 

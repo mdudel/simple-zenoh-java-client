@@ -142,11 +142,28 @@ public record Push(
 
     /** Parse a Push from bytes; the tail is treated as opaque body. */
     public static Push decode(byte[] data) {
-        return decode(new RBuf(data));
+        RBuf r = new RBuf(data);
+        Header h = decodeHeader(r);
+        byte[] body = r.bytes(r.remaining());
+        return new Push(h.scope, h.suffix, h.hasM, h.exts, body);
     }
 
     /** Decode one PUSH from a shared frame cursor, leaving following messages unread. */
     public static Push decode(RBuf r) {
+        Header h = decodeHeader(r);
+        if (!r.hasMore()) throw new IllegalArgumentException("Push.decode: missing PushBody");
+        int bodyId = r.peekU8() & 0x1F;
+        if (bodyId != Put.ID) {
+            throw new IllegalArgumentException("Push.decode: unsupported PushBody id 0x" + Integer.toHexString(bodyId));
+        }
+        // PUT is self-delimiting because its payload is length-prefixed.
+        byte[] body = Put.decode(r).encode();
+        return new Push(h.scope, h.suffix, h.hasM, h.exts, body);
+    }
+
+    private record Header(int scope, String suffix, boolean hasM, List<Extension> exts) {}
+
+    private static Header decodeHeader(RBuf r) {
         int header = r.u8();
         int id = header & 0x1F;
         if (id != ID) {
@@ -167,14 +184,7 @@ public record Push(
             suffix = new String(r.lenBytes(), StandardCharsets.UTF_8);
         }
         List<Extension> exts = hasZ ? Extension.readAll(r) : List.of();
-        if (!r.hasMore()) throw new IllegalArgumentException("Push.decode: missing PushBody");
-        int bodyId = r.peekU8() & 0x1F;
-        if (bodyId != Put.ID) {
-            throw new IllegalArgumentException("Push.decode: unsupported PushBody id 0x" + Integer.toHexString(bodyId));
-        }
-        // PUT is self-delimiting because its payload is length-prefixed.
-        byte[] body = Put.decode(r).encode();
-        return new Push((int) scope, suffix, hasM, exts, body);
+        return new Header((int) scope, suffix, hasM, exts);
     }
 
     @Override public String toString() {

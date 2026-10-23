@@ -8,7 +8,7 @@ Zenoh Publisher, Subscriber and Scout (multicast discovery of nearby
 routers and peers).
 
 For the full list of builder options (TLS, mTLS, PEM/PKCS12 certs,
-WebSocket, hostname verification, scout modes, etc.) see [API.md](API.md).
+WebSocket, hostname verification, auto-reconnect, scout modes, etc.) see [API.md](API.md).
 
 ## API docs
 
@@ -139,10 +139,11 @@ Pairs with `runTlsSub.bat` for a quick end-to-end mTLS smoke test.
 
 `runTlsSub.bat` (and the class it wraps, `ZenohJavaTlsSub`) connects
 to a Zenoh router over TLS with client-certificate authentication.
-Zenoh has no topic-registry primitive, so "list topics" here means:
-subscribe to a wildcard key expression, track every unique key that
-receives at least one sample during the run, and print the sorted
-summary on Ctrl-C or after the optional timeout.
+Zenoh has no authoritative topic list on its own, so `ZenohJavaTlsSub`
+turns on `.recordTopics(true)` to merge router declarations
+(subscribers, queryables, and liveliness tokens) with observed live
+traffic, prints incoming samples as they arrive, and prints the sorted
+topic-discovery summary on Ctrl-C or after the optional timeout.
 
 The shipped `.bat` is hard-wired to the GOAT NET onboarding certs +
 router (`tls/100.64.165.203:7447`); to point it elsewhere, either
@@ -208,6 +209,10 @@ try (PureJavaZenohPublisher pub = PureJavaZenohPublisher.builder()
         .keyExpr("zenoh-client/test-topic")              // default: demo/example/zenoh-java
         .org("996dfb6c880346559dff117458d27b66")         // optional key prefix
         .leaseMs(10_000L)                                // default: 10000
+        .handshakeTimeoutMs(10_000)                      // default: 10000
+        .autoReconnect(true)                             // default: true
+        .reconnectInitialDelayMs(500L)                   // default: 500
+        .reconnectMaxDelayMs(30_000L)                    // default: 30000
 
         // ---- TLS and mTLS ----------------------------------------
         // Only consulted for tls/ and wss/ endpoints.
@@ -258,6 +263,10 @@ Builder reference:
 | `keyExpr(String)` | `demo/example/zenoh-java` | The key to publish on, before any `org` prefix. |
 | `org(String)` | empty | Prefix joined to `keyExpr` with a single slash. Read the result with `getEffectiveKeyExpr()`. |
 | `leaseMs(long)` | `10000` | Lease proposed to the router during the handshake. |
+| `handshakeTimeoutMs(int)` | `10000` | Socket connect, TLS handshake, and Zenoh INIT/OPEN timeout in milliseconds. |
+| `autoReconnect(boolean)` | `true` | Automatically reconnect in the background after an unexpected drop or missed router keepalives. |
+| `reconnectInitialDelayMs(long)` | `500` | Initial backoff delay before the first reconnect attempt. |
+| `reconnectMaxDelayMs(long)` | `30000` | Cap on exponential backoff between reconnect attempts. |
 | `rootCaCertPath(String)` | empty | CA root as PEM (`.pem`, `.crt`, `.cer`) or PKCS12 (`.p12`, `.pfx`). When empty, the JVM default trust store is used. |
 | `clientCertPath(String)` | empty | Client certificate for mTLS. |
 | `clientKeyPath(String)` | empty | Client private key for mTLS. For PEM you must set both this and `clientCertPath`. For PKCS12 set both to the same `.p12` file. |
@@ -380,6 +389,12 @@ no finish line. A topic sitting silent looks identical to a topic that
 doesn't exist. Wait longer, find more. The answer is always a floor,
 never proof that something isn't out there. Which is exactly why the
 recorder above is the better habit.
+
+If you just want a fast snapshot of what the router currently knows
+about declared subscribers (`INTEREST` mode `CURRENT`), without opening
+a wildcard subscription or waiting out a traffic window, call
+`listTopicsNow(pattern, timeoutMs)` or `listAllTopicsNow(timeoutMs)`.
+It returns as soon as the router sends `DeclareFinal`.
 
 ### Polling a live view
 

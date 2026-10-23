@@ -44,8 +44,8 @@ public abstract class AbstractTransport implements Transport {
     private final AtomicReference<Throwable>  readerError = new AtomicReference<>();
 
     /**
-     * Open the underlying link. Called exactly once by {@link #connect()}
-     * under the once-only guard. Subclasses arrange for received batches
+     * Open the underlying link. Called by {@link #connect()} (and
+     * {@link #reconnect()}). Subclasses arrange for received batches
      * to be delivered via {@link #deliver(byte[])}, and for asynchronous
      * failures to be reported via {@link #reportReaderError(Throwable)}.
      *
@@ -63,8 +63,8 @@ public abstract class AbstractTransport implements Transport {
     protected abstract void doSend(byte[] batch) throws TransportException;
 
     /**
-     * Release resources. Called at most once; the atomic-CAS in
-     * {@link #close()} guarantees no re-entrance.
+     * Release resources. Called at most once per connection cycle; the
+     * atomic-CAS in {@link #close()} guarantees no re-entrance.
      */
     protected abstract void doClose();
 
@@ -95,6 +95,25 @@ public abstract class AbstractTransport implements Transport {
             LOG.log(Level.DEBUG, () -> "connected " + describe());
         } catch (TransportException | RuntimeException e) {
             opened.set(false);
+            throw e;
+        }
+    }
+
+    @Override
+    public synchronized void reconnect() throws TransportException {
+        if (opened.get() && !closed.get()) {
+            close();
+        }
+        inbox.clear();
+        readerError.set(null);
+        closed.set(false);
+        opened.set(true);
+        try {
+            doConnect();
+            LOG.log(Level.DEBUG, () -> "reconnected " + describe());
+        } catch (TransportException | RuntimeException e) {
+            opened.set(false);
+            closed.set(true);
             throw e;
         }
     }

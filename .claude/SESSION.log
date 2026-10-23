@@ -8,6 +8,49 @@ what was done, decisions made, and what's next.
 
 ---
 
+## 2026-10-23 (incorporate origin/dev, cross-sync auto-reconnect + listTopicsNow, update ZenohJavaTlsSub)
+
+Assessed `origin/dev` (`bdb2f9c`) against local `main` and the sibling
+`java-zenoh-publisher/pure-java` repo, then executed all three approved
+recommendations:
+
+1. **Rewrote `origin/dev` onto `main`**:
+   - Fast-forwarded `main` to `origin/dev` (`bdb2f9c`), included the
+     `.gitignore` (`agy*`) update, and rewrote the WIP commit message
+     into a clean feature commit on `main`.
+2. **Cross-synced features between `simple-zenoh-java-client` and
+   `java-zenoh-publisher/pure-java`**:
+   - Ported auto-reconnect resilience (`handshakeTimeoutMs`,
+     `autoReconnect`, `reconnectInitialDelayMs`, `reconnectMaxDelayMs`,
+     `isReconnecting()`, `getReconnectCount()`, lease-expiry watchdog,
+     socket `SO_TIMEOUT`, and automatic re-declaration of active
+     subscriptions and topic-discovery interests on reconnect) plus
+     one-shot `CURRENT`-mode subscriber discovery (`Topic`,
+     `listTopicsNow`, `listAllTopicsNow`) and `ReconnectTest`,
+     `ListTopicsNowTest`, and `LoopbackZenohRouter` from
+     `java-zenoh-publisher/pure-java` into `simple-zenoh-java-client`.
+   - Back-synced the missing `TopicRegistryTest`,
+     `DeclareBodyRoundTripTest`, `PushExtsTest`, the full
+     `PureJavaZenohSubscriber` `TopicRegistry` Javadocs, and the
+     "pre-QoS client" framing cleanup into
+     `java-zenoh-publisher/pure-java` so both repositories have
+     identical `io.mdudel.zenoh.purejava` trees and test suites.
+3. **Updated `ZenohJavaTlsSub.java`**:
+   - Enabled `.recordTopics(true).recordTopicsPattern(keyExpr)` on the
+     subscriber builder while keeping live sample printing via
+     `subscribeAndConsume`, and updated `printTopicSummary` to report
+     the recorded `TopicInfo` entries (key, active/gone state, sample
+     count, and `sources()`), with fallback to `observedKeys` if the
+     router ACL refuses discovery interest.
+4. **Updated `README.md` and `API.md`**:
+   - Added `handshakeTimeoutMs`, `autoReconnect`,
+     `reconnectInitialDelayMs`, `reconnectMaxDelayMs`,
+     `isReconnecting()`, `getReconnectCount()`, and `listTopicsNow` /
+     `listAllTopicsNow`, updated the `ZenohJavaTlsSub` description, and
+     removed auto-reconnect from the unsupported features list.
+
+---
+
 ## 2026-09-27 (drop "pre-QoS client" framing, JAR-vs-embed guidance)
 
 Removed all 17 references to the "pre-QoS client". That phrase compared
@@ -359,7 +402,7 @@ Next:
   feature existed when QOS is left at its default.
   Listed all 8 valid priority names in both the REM header and the
   `--help` printout, per the user's ask.
-  No Java changes needed — --qos ultimately flows through the existing
+  No Java changes needed - --qos ultimately flows through the existing
   --priority mechanism, which already gets embedded in the published
   payload (see below).
 - Verified with `mvn -q package`; hand-traced the parser (couldn't
@@ -392,7 +435,7 @@ Next:
   directly from this sandboxed Bash tool to test interactively).
 - Updated README.md's "mTLS publisher with QoS" section and the
   in-file REM/help text to document the new flag and precedence rule.
-- Not yet committed/pushed — waiting on user confirmation.
+- Not yet committed/pushed - waiting on user confirmation.
 
 ## 2026-09-25
 - Added project-level and global (`~/.claude/CLAUDE.md`) notes: how to

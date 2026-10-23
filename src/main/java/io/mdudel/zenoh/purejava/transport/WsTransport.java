@@ -132,6 +132,7 @@ public final class WsTransport extends AbstractTransport {
     @Override
     protected void doConnect() throws TransportException {
         configLocked = true;
+        fragBuf = null;
         HttpClient.Builder cb = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(connectTimeoutMs));
         if (tls != null) {
@@ -231,6 +232,8 @@ public final class WsTransport extends AbstractTransport {
 
         @Override
         public CompletionStage<?> onBinary(WebSocket webSocket, ByteBuffer data, boolean last) {
+            WebSocket active = WsTransport.this.webSocket;
+            if (active != null && active != webSocket) return null;
             int len = data.remaining();
             byte[] chunk = new byte[len];
             data.get(chunk);
@@ -266,6 +269,8 @@ public final class WsTransport extends AbstractTransport {
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+            WebSocket active = WsTransport.this.webSocket;
+            if (active != null && active != webSocket) return null;
             // Zenoh is binary-only. A text frame is a server-side bug; log-then-close.
             reportReaderError(new IOException(
                     "unexpected text frame on Zenoh WebSocket: " + data));
@@ -275,6 +280,8 @@ public final class WsTransport extends AbstractTransport {
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            WebSocket active = WsTransport.this.webSocket;
+            if (active != null && active != webSocket) return null;
             // Clean close from the peer.
             reportReaderError(new EOFException(
                     "WebSocket closed by peer: status=" + statusCode + " reason=" + reason));
@@ -284,6 +291,8 @@ public final class WsTransport extends AbstractTransport {
 
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
+            WebSocket active = WsTransport.this.webSocket;
+            if (active != null && active != webSocket) return;
             reportReaderError(error);
             WsTransport.this.close();
         }

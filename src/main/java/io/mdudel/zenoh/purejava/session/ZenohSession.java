@@ -8,8 +8,8 @@ package io.mdudel.zenoh.purejava.session;
 import io.mdudel.zenoh.purejava.transport.Transport;
 import io.mdudel.zenoh.purejava.transport.TransportException;
 import io.mdudel.zenoh.purejava.wire.Encoding;
-import io.mdudel.zenoh.purejava.wire.KeyExpr;
 import io.mdudel.zenoh.purejava.wire.Extension;
+import io.mdudel.zenoh.purejava.wire.KeyExpr;
 import io.mdudel.zenoh.purejava.wire.Qos;
 import io.mdudel.zenoh.purejava.wire.RBuf;
 import io.mdudel.zenoh.purejava.wire.Timestamp;
@@ -25,14 +25,13 @@ import io.mdudel.zenoh.purejava.wire.messages.KeepAlive;
 import io.mdudel.zenoh.purejava.wire.messages.Open;
 import io.mdudel.zenoh.purejava.wire.messages.Push;
 import io.mdudel.zenoh.purejava.wire.messages.Put;
-import io.mdudel.zenoh.purejava.wire.messages.UndeclareSubscriber;
 import io.mdudel.zenoh.purejava.wire.messages.UndeclareKeyExpr;
-
-import java.util.function.Consumer;
+import io.mdudel.zenoh.purejava.wire.messages.UndeclareSubscriber;
 
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -53,8 +52,11 @@ import java.util.concurrent.atomic.AtomicReference;
  *       and dispatches KEEP_ALIVE / CLOSE server-driven messages.</li>
  *   <li>The KEEP_ALIVE scheduler (fires at {@code lease/4} intervals
  *       when the outbound side has been quiet).</li>
- *   <li>The lease-expiry watchdog (tears down if the inbound side has
- *       been quiet for a full lease period).</li>
+ *   <li>The lease-expiry watchdog (tears down or reconnects if the
+ *       inbound side has been quiet for a full lease period).</li>
+ *   <li>Optional automatic reconnect with exponential backoff and
+ *       automatic re-declaration of active {@link Subscription}s and
+ *       {@link Interest}s after transport recovery.</li>
  *   <li>Publish serialisation over the transport (transport already
  *       serialises {@code send()}, but the session adds a monotonic
  *       sequence number per frame).</li>
@@ -65,9 +67,6 @@ import java.util.concurrent.atomic.AtomicReference;
  * transport is <b>not</b> connected by the session &mdash; call
  * {@link Transport#connect()} beforehand, or use
  * {@link Builder#autoConnect(boolean)} to let the session do it.</p>
- *
- * <p>Publish-only client SPI in the MVP: {@link #publish(String, byte[])} and
- * variants. Subscribe / query are out of scope for the publisher.</p>
  *
  * <p>Threading:</p>
  * <ul>
@@ -84,56 +83,70 @@ public final class ZenohSession implements AutoCloseable {
     // ---- protocol constants ----------------------------------------------
 
     /** Zenoh wire protocol version 1.x uses this byte in the InitSyn/InitAck version field. */
-    public static final int  WIRE_VERSION           = 0x09;
+    public static final int  WIRE_VERSION                     = 0x09;
 
     /** Default lease we propose in OpenSyn (ms). */
-    public static final long DEFAULT_LEASE_MS       = 10_000L;
+    public static final long DEFAULT_LEASE_MS                 = 10_000L;
 
     /** Default handshake read timeout (ms). */
-    public static final int  DEFAULT_HANDSHAKE_MS   = 5_000;
+    public static final int  DEFAULT_HANDSHAKE_MS             = 5_000;
 
     /** Default close-frame flush timeout (ms). */
-    public static final int  DEFAULT_CLOSE_MS       = 1_500;
+    public static final int  DEFAULT_CLOSE_MS                 = 1_500;
+
+    /** Default initial delay before the first reconnect attempt (ms). */
+    public static final long DEFAULT_RECONNECT_INITIAL_DELAY_MS = 250L;
+
+    /** Default maximum exponential-backoff delay between reconnect attempts (ms). */
+    public static final long DEFAULT_RECONNECT_MAX_DELAY_MS     = 10_000L;
 
     // ---- configuration ---------------------------------------------------
 
-    private final Transport transport;
-    private final ZenohId   localId;
-    private final long      proposedLeaseMs;
-    private final int       handshakeTimeoutMs;
-    private final int       closeTimeoutMs;
-    private final boolean   autoConnect;
-    private final boolean   localRouting;
+    private final Transport            transport;
+    private final ZenohId              localId;
+    private final long                 proposedLeaseMs;
+    private final int                  handshakeTimeoutMs;
+    private final int                  closeTimeoutMs;
+    private final boolean              autoConnect;
+    private final boolean              localRouting;
     private final SessionAuthenticator authenticator;
+    private final boolean              autoReconnect;
+    private final long                 reconnectInitialDelayMs;
+    private final long                 reconnectMaxDelayMs;
 
     // ---- lifecycle state -------------------------------------------------
+
+    private record ActiveInterest(
+            long id,
+            Interest.Mode mode,
+            int options,
+            String keyExpr,
+            DiscoveryListener listener) { }
 
     private final AtomicReference<SessionState> state = new AtomicReference<>(SessionState.CREATED);
     private volatile ZenohId                    remoteId;
     private volatile long                       negotiatedLeaseMs;
-    private final AtomicLong                    outboundSn   = new AtomicLong(0);
-    private final AtomicLong                    lastSendNanos = new AtomicLong(0);
-    private final AtomicLong                    lastRecvNanos = new AtomicLong(0);
+    private final AtomicLong                    outboundSn      = new AtomicLong(0);
+    private final AtomicLong                    lastSendNanos   = new AtomicLong(0);
+    private final AtomicLong                    lastRecvNanos   = new AtomicLong(0);
     private final AtomicLong                    subscriberIdSeq = new AtomicLong(1);
     private final AtomicLong                    interestIdSeq   = new AtomicLong(1);
-    private final java.util.concurrent.ConcurrentHashMap<Long, Subscription> subscriptions =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentHashMap<Long, DiscoveryListener> interests =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentHashMap<Integer, String> remoteKeyExprs =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private final AtomicLong                    reconnectCount  = new AtomicLong(0);
+    private final ConcurrentHashMap<Long, Subscription>   subscriptions  = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ActiveInterest> interests      = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, String>      remoteKeyExprs = new ConcurrentHashMap<>();
 
     /**
      * Callback invoked once per DECLARE record the router returns in
      * response to an INTEREST. The record's kind determines which
      * fields are populated:
      * <ul>
-     *   <li>DECLARE_SUBSCRIBER → {@link Declare.Body#asDeclareSubscriber()}
+     *   <li>DECLARE_SUBSCRIBER &rarr; {@link Declare.Body#asDeclareSubscriber()}
      *       gives the subscriber id + declared KeyExpr</li>
-     *   <li>UNDECLARE_SUBSCRIBER → fired for future-mode interests
+     *   <li>UNDECLARE_SUBSCRIBER &rarr; fired for future-mode interests
      *       when a peer subscription goes away</li>
-     *   <li>RAW → for DECLARE bodies we don't decode yet (queryable, token,
-     *       keyexpr mappings). The raw bytes are on the Body.</li>
+     *   <li>RAW &rarr; for DECLARE bodies we don't decode yet. The raw bytes
+     *       are on the Body.</li>
      * </ul>
      * {@code isFinal} is true iff this DECLARE carries the interest's
      * FINAL sentinel, meaning "current-state replay complete" (for
@@ -149,16 +162,20 @@ public final class ZenohSession implements AutoCloseable {
     private volatile ScheduledFuture<?>         keepAliveTask;
     private volatile ScheduledFuture<?>         leaseWatchdogTask;
     private volatile Thread                     readerThread;
+    private volatile Thread                     reconnectThread;
 
     private ZenohSession(Builder b) {
-        this.transport          = b.transport;
-        this.localId            = b.localId != null ? b.localId : ZenohId.random();
-        this.proposedLeaseMs    = b.leaseMs;
-        this.handshakeTimeoutMs = b.handshakeTimeoutMs;
-        this.closeTimeoutMs     = b.closeTimeoutMs;
-        this.autoConnect        = b.autoConnect;
-        this.localRouting       = b.localRouting;
-        this.authenticator      = b.authenticator;
+        this.transport               = b.transport;
+        this.localId                 = b.localId != null ? b.localId : ZenohId.random();
+        this.proposedLeaseMs         = b.leaseMs;
+        this.handshakeTimeoutMs      = b.handshakeTimeoutMs;
+        this.closeTimeoutMs          = b.closeTimeoutMs;
+        this.autoConnect             = b.autoConnect;
+        this.localRouting            = b.localRouting;
+        this.authenticator           = b.authenticator;
+        this.autoReconnect           = b.autoReconnect;
+        this.reconnectInitialDelayMs = b.reconnectInitialDelayMs;
+        this.reconnectMaxDelayMs     = b.reconnectMaxDelayMs;
     }
 
     public static Builder builder(Transport transport) {
@@ -171,7 +188,9 @@ public final class ZenohSession implements AutoCloseable {
     public ZenohId      localId()           { return localId; }
     public ZenohId      remoteId()          { return remoteId; }
     public long         negotiatedLeaseMs() { return negotiatedLeaseMs; }
-    public Transport    transport()        { return transport; }
+    public Transport    transport()         { return transport; }
+    public boolean      isAutoReconnect()   { return autoReconnect; }
+    public long         reconnectCount()    { return reconnectCount.get(); }
 
     // ---- lifecycle --------------------------------------------------------
 
@@ -197,43 +216,7 @@ public final class ZenohSession implements AutoCloseable {
             }
             state.set(SessionState.OPENING);
 
-            // 1. Client -> Server: InitSyn
-            Init.InitSyn initSyn = new Init.InitSyn(
-                    WIRE_VERSION,
-                    io.mdudel.zenoh.purejava.wire.WhatAmI.CLIENT,
-                    localId,
-                    authenticator == null ? java.util.List.of() : authenticator.initSynExtensions());
-            sendRaw(initSyn.encode());
-
-            // 2. Server -> Client: InitAck
-            byte[] initAckBytes = receiveExpectedFrame("InitAck");
-            Init.InitAck initAck;
-            try {
-                initAck = Init.InitAck.decode(initAckBytes);
-            } catch (RuntimeException e) {
-                throw new SessionException("failed to decode InitAck: " + e.getMessage(), e);
-            }
-            this.remoteId = initAck.zid();
-            if (authenticator != null) authenticator.receiveInitAck(initAck.extensions());
-
-            // 3. Client -> Server: OpenSyn (echo cookie)
-            Open.OpenSyn openSyn = new Open.OpenSyn(
-                    proposedLeaseMs,
-                    /* initialSn = */ 0L,
-                    initAck.cookie(),
-                    authenticator == null ? java.util.List.of() : authenticator.openSynExtensions());
-            sendRaw(openSyn.encode());
-
-            // 4. Server -> Client: OpenAck
-            byte[] openAckBytes = receiveExpectedFrame("OpenAck");
-            Open.OpenAck openAck;
-            try {
-                openAck = Open.OpenAck.decode(openAckBytes);
-            } catch (RuntimeException e) {
-                throw new SessionException("failed to decode OpenAck: " + e.getMessage(), e);
-            }
-            this.negotiatedLeaseMs = openAck.leaseMillis();
-            if (authenticator != null) authenticator.receiveOpenAck(openAck.extensions());
+            performHandshake();
 
             // Enter OPEN and spin up the periodic tasks + reader thread.
             state.set(SessionState.OPEN);
@@ -251,6 +234,46 @@ public final class ZenohSession implements AutoCloseable {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new SessionException("handshake failure: " + e.getMessage(), e);
         }
+    }
+
+    private void performHandshake() throws SessionException, TransportException, InterruptedException {
+        // 1. Client -> Server: InitSyn
+        Init.InitSyn initSyn = new Init.InitSyn(
+                WIRE_VERSION,
+                io.mdudel.zenoh.purejava.wire.WhatAmI.CLIENT,
+                localId,
+                authenticator == null ? java.util.List.of() : authenticator.initSynExtensions());
+        sendRaw(initSyn.encode());
+
+        // 2. Server -> Client: InitAck
+        byte[] initAckBytes = receiveExpectedFrame("InitAck");
+        Init.InitAck initAck;
+        try {
+            initAck = Init.InitAck.decode(initAckBytes);
+        } catch (RuntimeException e) {
+            throw new SessionException("failed to decode InitAck: " + e.getMessage(), e);
+        }
+        this.remoteId = initAck.zid();
+        if (authenticator != null) authenticator.receiveInitAck(initAck.extensions());
+
+        // 3. Client -> Server: OpenSyn (echo cookie)
+        Open.OpenSyn openSyn = new Open.OpenSyn(
+                proposedLeaseMs,
+                /* initialSn = */ 0L,
+                initAck.cookie(),
+                authenticator == null ? java.util.List.of() : authenticator.openSynExtensions());
+        sendRaw(openSyn.encode());
+
+        // 4. Server -> Client: OpenAck
+        byte[] openAckBytes = receiveExpectedFrame("OpenAck");
+        Open.OpenAck openAck;
+        try {
+            openAck = Open.OpenAck.decode(openAckBytes);
+        } catch (RuntimeException e) {
+            throw new SessionException("failed to decode OpenAck: " + e.getMessage(), e);
+        }
+        this.negotiatedLeaseMs = openAck.leaseMillis();
+        if (authenticator != null) authenticator.receiveOpenAck(openAck.extensions());
     }
 
     /**
@@ -390,7 +413,7 @@ public final class ZenohSession implements AutoCloseable {
             throw new SessionException("declareInterest requires state=OPEN, current=" + state.get());
         }
         long id = interestIdSeq.getAndIncrement();
-        interests.put(id, listener);
+        interests.put(id, new ActiveInterest(id, mode, options, keyExpr, listener));
         try {
             Interest interest = new Interest(id, mode, options, 0, keyExpr, java.util.List.of());
             long sn = outboundSn.getAndIncrement();
@@ -497,6 +520,10 @@ public final class ZenohSession implements AutoCloseable {
         // Scheduler for KEEP_ALIVE + lease watchdog.
         ScheduledExecutorService s = Executors.newSingleThreadScheduledExecutor(tf);
         this.scheduler = s;
+        schedulePeriodicTasks(s);
+    }
+
+    private void schedulePeriodicTasks(ScheduledExecutorService s) {
         long tickMs = Math.max(1, negotiatedLeaseMs / 4);
         this.keepAliveTask = s.scheduleAtFixedRate(
                 this::maybeSendKeepAlive, tickMs, tickMs, TimeUnit.MILLISECONDS);
@@ -505,11 +532,21 @@ public final class ZenohSession implements AutoCloseable {
                 this::checkLeaseExpiry, tickMs, tickMs, TimeUnit.MILLISECONDS);
     }
 
-    private void cancelBackgroundTasks() {
+    private void cancelPeriodicTasks() {
         ScheduledFuture<?> k = keepAliveTask;
         if (k != null) k.cancel(false);
         ScheduledFuture<?> w = leaseWatchdogTask;
         if (w != null) w.cancel(false);
+    }
+
+    private void cancelBackgroundTasks() {
+        cancelPeriodicTasks();
+        Thread rec = reconnectThread;
+        if (rec != null && rec != Thread.currentThread()) {
+            rec.interrupt();
+            try { rec.join(closeTimeoutMs); }
+            catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        }
         ScheduledExecutorService s = scheduler;
         if (s != null) {
             s.shutdownNow();
@@ -520,6 +557,104 @@ public final class ZenohSession implements AutoCloseable {
         if (rt != null && rt != Thread.currentThread()) {
             try { rt.join(closeTimeoutMs); }
             catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        }
+    }
+
+    private void handleUnexpectedDisconnect(String reason) {
+        if (closed.get()) return;
+        if (!autoReconnect) {
+            close();
+            return;
+        }
+        triggerReconnect(reason);
+    }
+
+    private void triggerReconnect(String reason) {
+        if (closed.get()) return;
+        if (!state.compareAndSet(SessionState.OPEN, SessionState.RECONNECTING)) {
+            return;
+        }
+        LOG.log(Level.INFO, () -> "ZenohSession lost connection (" + reason + "); entering RECONNECTING");
+        cancelPeriodicTasks();
+        Thread rec = new Thread(this::reconnectLoop,
+                "zenoh-session-reconnect-" + Integer.toHexString(System.identityHashCode(this)));
+        rec.setDaemon(true);
+        this.reconnectThread = rec;
+        rec.start();
+    }
+
+    private void reconnectLoop() {
+        long delayMs = reconnectInitialDelayMs;
+        while (!closed.get() && state.get() == SessionState.RECONNECTING) {
+            if (delayMs > 0) {
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            if (closed.get() || state.get() != SessionState.RECONNECTING) {
+                return;
+            }
+            try {
+                transport.reconnect();
+                remoteKeyExprs.clear();
+                outboundSn.set(0);
+                performHandshake();
+                long nowNs = System.nanoTime();
+                lastSendNanos.set(nowNs);
+                lastRecvNanos.set(nowNs);
+                if (!state.compareAndSet(SessionState.RECONNECTING, SessionState.OPEN)) {
+                    return;
+                }
+                long attempt = reconnectCount.incrementAndGet();
+                LOG.log(Level.INFO, () ->
+                        "ZenohSession reconnected (count=" + attempt + ", remote=" + remoteId
+                                + ", lease=" + negotiatedLeaseMs + "ms)");
+
+                // Spin up a fresh reader thread and re-schedule periodic tasks before re-declaring.
+                Thread rt = new Thread(this::readerLoop,
+                        "zenoh-session-reader-" + Integer.toHexString(System.identityHashCode(this)));
+                rt.setDaemon(true);
+                this.readerThread = rt;
+                rt.start();
+
+                ScheduledExecutorService s = this.scheduler;
+                if (s != null && !s.isShutdown()) {
+                    schedulePeriodicTasks(s);
+                }
+
+                redeclareState();
+                return;
+            } catch (Exception e) {
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                LOG.log(Level.DEBUG, () -> "reconnect attempt failed: " + e.getMessage());
+                delayMs = Math.min(reconnectMaxDelayMs, Math.max(1L, delayMs * 2));
+            }
+        }
+    }
+
+    /**
+     * Re-declare all open {@link Subscription}s and active {@link Interest}s
+     * after a successful session reconnect.
+     */
+    private void redeclareState() throws SessionException {
+        for (Subscription sub : subscriptions.values()) {
+            if (!sub.isOpen()) continue;
+            Declare declare = Declare.ofDeclareSubscriber(
+                    DeclareSubscriber.ofKeyExpr(sub.id(), sub.keyExpr().value()));
+            long sn = outboundSn.getAndIncrement();
+            sendRaw(rawFrameCarrying(sn, declare.encode()));
+        }
+        for (ActiveInterest ai : interests.values()) {
+            Interest interest = new Interest(
+                    ai.id(), ai.mode(), ai.options(), 0, ai.keyExpr(), java.util.List.of());
+            long sn = outboundSn.getAndIncrement();
+            sendRaw(rawFrameCarrying(sn, interest.encode()));
         }
     }
 
@@ -535,7 +670,7 @@ public final class ZenohSession implements AutoCloseable {
             sendRaw(KeepAlive.EMPTY.encode());
         } catch (SessionException e) {
             LOG.log(Level.DEBUG, () -> "KEEP_ALIVE send failed: " + e.getMessage());
-            close();
+            handleUnexpectedDisconnect("KEEP_ALIVE send failed: " + e.getMessage());
         }
     }
 
@@ -547,7 +682,7 @@ public final class ZenohSession implements AutoCloseable {
             LOG.log(Level.DEBUG, () ->
                     "lease expired: no inbound traffic in " + (silenceNs / 1_000_000) + "ms > "
                             + negotiatedLeaseMs + "ms");
-            close();
+            handleUnexpectedDisconnect("lease expired");
         }
     }
 
@@ -559,14 +694,17 @@ public final class ZenohSession implements AutoCloseable {
                     batch = transport.receive(100, TimeUnit.MILLISECONDS);
                 } catch (TransportException te) {
                     LOG.log(Level.DEBUG, () -> "reader: transport error: " + te.getMessage());
-                    close();
+                    handleUnexpectedDisconnect("transport error: " + te.getMessage());
                     return;
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return;
                 }
                 if (batch == null) {
-                    if (!transport.isOpen()) { close(); return; }
+                    if (!transport.isOpen()) {
+                        handleUnexpectedDisconnect("transport EOF");
+                        return;
+                    }
                     continue;
                 }
                 lastRecvNanos.set(System.nanoTime());
@@ -574,7 +712,7 @@ public final class ZenohSession implements AutoCloseable {
             }
         } catch (RuntimeException re) {
             LOG.log(Level.DEBUG, () -> "reader crashed: " + re);
-            close();
+            handleUnexpectedDisconnect("reader crashed: " + re.getMessage());
         }
     }
 
@@ -587,7 +725,7 @@ public final class ZenohSession implements AutoCloseable {
             }
             case Close.ID -> {
                 LOG.log(Level.DEBUG, () -> "peer sent CLOSE");
-                close();
+                handleUnexpectedDisconnect("peer sent CLOSE");
             }
             case Frame.ID -> handleInboundFrame(batch);
             default -> LOG.log(Level.DEBUG, () ->
@@ -597,9 +735,7 @@ public final class ZenohSession implements AutoCloseable {
 
     /**
      * Decode an inbound FRAME. Its payload is a concatenation of
-     * network messages (typically PUSH for subscriber-side traffic).
-     * We currently only route PUSH into subscriptions; other network
-     * messages (DECLARE, REQUEST, RESPONSE, OAM) are logged and dropped.
+     * network messages (typically PUSH and DECLARE for subscriber-side traffic).
      */
     private void handleInboundFrame(byte[] batch) {
         RBuf frame;
@@ -637,26 +773,6 @@ public final class ZenohSession implements AutoCloseable {
         }
     }
 
-    private void tryDeliverPush(byte[] payload) {
-        Push push;
-        try { push = Push.decode(payload); }
-        catch (RuntimeException e) {
-            LOG.log(Level.DEBUG, () -> "reader: PUSH decode failed: " + e.getMessage());
-            return;
-        }
-        deliverPush(push);
-    }
-
-    private void tryDeliverDeclare(byte[] payload) {
-        Declare declare;
-        try { declare = Declare.decode(payload); }
-        catch (RuntimeException e) {
-            LOG.log(Level.DEBUG, () -> "reader: DECLARE decode failed: " + e.getMessage());
-            return;
-        }
-        handleDeclare(declare);
-    }
-
     private void handleDeclare(Declare declare) {
         if (declare.body().kind() == Declare.Body.BodyKind.DECLARE_KEY_EXPR) {
             DeclareKeyExpr mapping = declare.body().asDeclareKeyExpr();
@@ -675,35 +791,30 @@ public final class ZenohSession implements AutoCloseable {
         Long interestId = declare.interestId();
         if (interestId == null) {
             // Server-driven DECLARE not associated with any of our interests
-            // (e.g. gossip from the router about upstream declarations). Log
-            // and drop; a real discovery use case would want to route these
-            // to a wildcard listener but MVP scope is interest-id-matched only.
+            // (e.g. gossip from the router about upstream declarations).
             LOG.log(Level.TRACE, () ->
                     "reader: DECLARE with no interest_id; dropped (" + declare.body().kind() + ")");
             return;
         }
-        DiscoveryListener listener = interests.get(interestId);
-        if (listener == null) {
+        ActiveInterest active = interests.get(interestId);
+        if (active == null) {
             LOG.log(Level.TRACE, () ->
                     "reader: DECLARE for unknown interest_id " + interestId + "; dropped");
             return;
         }
         // The FINAL sentinel is a DeclareBody whose sub-id is D_FINAL (0x1A).
-        // We surface it via the isFinal flag and remove the interest so the
-        // listener knows the current-state replay is done.
         boolean isFinal = declare.body().kind() == Declare.Body.BodyKind.RAW
                 && declare.body().rawBytes() != null
                 && declare.body().rawBytes().length >= 1
                 && (declare.body().rawBytes()[0] & 0x1F) == 0x1A;
-        try { listener.onDeclare(declare, isFinal); }
+        if (isFinal && active.mode() == Interest.Mode.CURRENT) {
+            interests.remove(interestId);
+        }
+        try { active.listener().onDeclare(declare, isFinal); }
         catch (RuntimeException re) {
             LOG.log(Level.DEBUG, () ->
                     "reader: DiscoveryListener threw: " + re.getMessage());
         }
-        // Auto-cleanup: after FINAL for a CURRENT-only interest, the router
-        // won't send more. Remove from the map so we don't leak.
-        // (CurrentFuture callers should call finalInterest() explicitly.)
-        // We can't tell the mode from here, so we leave cleanup to the caller.
     }
 
     /** Turn one inbound PUSH into a {@link Sample} and route to matching subscriptions. */
@@ -781,14 +892,17 @@ public final class ZenohSession implements AutoCloseable {
     // ---- Builder ---------------------------------------------------------
 
     public static final class Builder {
-        private final Transport transport;
-        private       ZenohId   localId;
-        private       long      leaseMs             = DEFAULT_LEASE_MS;
-        private       int       handshakeTimeoutMs  = DEFAULT_HANDSHAKE_MS;
-        private       int       closeTimeoutMs      = DEFAULT_CLOSE_MS;
-        private       boolean   autoConnect         = true;
-        private       boolean   localRouting        = true;
+        private final Transport            transport;
+        private       ZenohId              localId;
+        private       long                 leaseMs                 = DEFAULT_LEASE_MS;
+        private       int                  handshakeTimeoutMs      = DEFAULT_HANDSHAKE_MS;
+        private       int                  closeTimeoutMs          = DEFAULT_CLOSE_MS;
+        private       boolean              autoConnect             = true;
+        private       boolean              localRouting            = true;
         private       SessionAuthenticator authenticator;
+        private       boolean              autoReconnect           = false;
+        private       long                 reconnectInitialDelayMs = DEFAULT_RECONNECT_INITIAL_DELAY_MS;
+        private       long                 reconnectMaxDelayMs     = DEFAULT_RECONNECT_MAX_DELAY_MS;
 
         private Builder(Transport transport) {
             this.transport = Objects.requireNonNull(transport, "transport");
@@ -836,6 +950,31 @@ public final class ZenohSession implements AutoCloseable {
         /** Optional Zenoh INIT/OPEN transport authentication. */
         public Builder authenticator(SessionAuthenticator value) {
             this.authenticator = value;
+            return this;
+        }
+
+        /**
+         * When true, unexpected transport disconnects or lease expiries transition
+         * the session to {@link SessionState#RECONNECTING}, reconnect with
+         * exponential backoff, re-run the INIT/OPEN handshake, and re-declare
+         * all open {@link Subscription}s and active {@link Interest}s.
+         */
+        public Builder autoReconnect(boolean on) {
+            this.autoReconnect = on;
+            return this;
+        }
+
+        /** Initial backoff delay before the first reconnect attempt (ms). Default {@value #DEFAULT_RECONNECT_INITIAL_DELAY_MS}. */
+        public Builder reconnectInitialDelayMs(long ms) {
+            if (ms < 0) throw new IllegalArgumentException("reconnectInitialDelayMs must be >= 0");
+            this.reconnectInitialDelayMs = ms;
+            return this;
+        }
+
+        /** Maximum exponential-backoff delay between reconnect attempts (ms). Default {@value #DEFAULT_RECONNECT_MAX_DELAY_MS}. */
+        public Builder reconnectMaxDelayMs(long ms) {
+            if (ms < 1) throw new IllegalArgumentException("reconnectMaxDelayMs must be >= 1");
+            this.reconnectMaxDelayMs = ms;
             return this;
         }
 

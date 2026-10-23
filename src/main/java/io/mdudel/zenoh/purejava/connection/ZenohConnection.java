@@ -44,7 +44,11 @@ public final class ZenohConnection implements AutoCloseable {
     private final char[] keyStorePassword;
     private final boolean verifyHostname;
     private final long leaseMs;
+    private final int handshakeTimeoutMs;
     private final boolean localRouting;
+    private final boolean autoReconnect;
+    private final long reconnectInitialDelayMs;
+    private final long reconnectMaxDelayMs;
     private final Path zenohAuthPublicKey;
     private final Path zenohAuthPrivateKey;
     private final List<Path> trustedRouterPublicKeys;
@@ -63,7 +67,11 @@ public final class ZenohConnection implements AutoCloseable {
         keyStorePassword = b.keyStorePassword == null ? null : b.keyStorePassword.clone();
         verifyHostname = b.verifyHostname;
         leaseMs = b.leaseMs;
+        handshakeTimeoutMs = b.handshakeTimeoutMs;
         localRouting = b.localRouting;
+        autoReconnect = b.autoReconnect;
+        reconnectInitialDelayMs = b.reconnectInitialDelayMs;
+        reconnectMaxDelayMs = b.reconnectMaxDelayMs;
         zenohAuthPublicKey = b.zenohAuthPublicKey;
         zenohAuthPrivateKey = b.zenohAuthPrivateKey;
         trustedRouterPublicKeys = List.copyOf(b.trustedRouterPublicKeys);
@@ -81,7 +89,13 @@ public final class ZenohConnection implements AutoCloseable {
             throw e instanceof IOException io ? io : new IOException(lastError, e);
         }
         ZenohSession.Builder sessionBuilder = ZenohSession.builder(transport)
-                .leaseMs(leaseMs).localRouting(localRouting).autoConnect(true);
+                .leaseMs(leaseMs)
+                .handshakeTimeoutMs(handshakeTimeoutMs)
+                .localRouting(localRouting)
+                .autoConnect(true)
+                .autoReconnect(autoReconnect)
+                .reconnectInitialDelayMs(reconnectInitialDelayMs)
+                .reconnectMaxDelayMs(reconnectMaxDelayMs);
         if (zenohAuthPublicKey != null) {
             sessionBuilder.authenticator(new ZenohRsaAuthenticator(
                     zenohAuthPublicKey, zenohAuthPrivateKey,
@@ -101,6 +115,16 @@ public final class ZenohConnection implements AutoCloseable {
     public boolean isActive() {
         ZenohSession current = session;
         return current != null && current.state() == SessionState.OPEN;
+    }
+
+    public boolean isReconnecting() {
+        ZenohSession current = session;
+        return current != null && current.state() == SessionState.RECONNECTING;
+    }
+
+    public long getReconnectCount() {
+        ZenohSession current = session;
+        return current == null ? 0L : current.reconnectCount();
     }
 
     public String getLastError() { return lastError; }
@@ -270,7 +294,11 @@ public final class ZenohConnection implements AutoCloseable {
         private char[] keyStorePassword = "changeit".toCharArray();
         private boolean verifyHostname = true;
         private long leaseMs = ZenohSession.DEFAULT_LEASE_MS;
+        private int handshakeTimeoutMs = ZenohSession.DEFAULT_HANDSHAKE_MS;
         private boolean localRouting = true;
+        private boolean autoReconnect = false;
+        private long reconnectInitialDelayMs = ZenohSession.DEFAULT_RECONNECT_INITIAL_DELAY_MS;
+        private long reconnectMaxDelayMs = ZenohSession.DEFAULT_RECONNECT_MAX_DELAY_MS;
         private Path zenohAuthPublicKey;
         private Path zenohAuthPrivateKey;
         private List<Path> trustedRouterPublicKeys = List.of();
@@ -287,8 +315,13 @@ public final class ZenohConnection implements AutoCloseable {
         }
         public Builder verifyHostname(boolean value) { verifyHostname = value; return this; }
         public Builder leaseMs(long value) { leaseMs = value; return this; }
+        public Builder handshakeTimeoutMs(int value) { handshakeTimeoutMs = value; return this; }
         /** Same-session publications are delivered locally by default, matching official Zenoh semantics. */
         public Builder localRouting(boolean value) { localRouting = value; return this; }
+        /** Enable automatic session reconnect and state re-declaration on unexpected disconnects. */
+        public Builder autoReconnect(boolean value) { autoReconnect = value; return this; }
+        public Builder reconnectInitialDelayMs(long value) { reconnectInitialDelayMs = value; return this; }
+        public Builder reconnectMaxDelayMs(long value) { reconnectMaxDelayMs = value; return this; }
 
         /**
          * Enable Zenoh 1.9 RSA pubkey transport authentication. This is

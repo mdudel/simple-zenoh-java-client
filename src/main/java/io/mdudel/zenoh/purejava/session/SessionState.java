@@ -6,18 +6,21 @@
 package io.mdudel.zenoh.purejava.session;
 
 /**
- * The lifecycle states of a {@link ZenohSession}. Transitions are
- * strictly forward-only:
+ * The lifecycle states of a {@link ZenohSession}.
  *
  * <pre>
- * CREATED &rarr; CONNECTING &rarr; OPENING &rarr; OPEN &rarr; CLOSING &rarr; CLOSED
- *    &darr;         &darr;          &darr;         &darr;        &darr;
- *    &there4;         &there4;          &there4;         &there4;        &there4;
- *   CLOSED     CLOSED      CLOSED    CLOSED   CLOSED
+ * CREATED &rarr; CONNECTING &rarr; OPENING &rarr; OPEN &harr; RECONNECTING
+ *    &darr;         &darr;          &darr;         &darr;          &darr;
+ *    &there4;         &there4;          &there4;      CLOSING       &there4;
+ *    &there4;         &there4;          &there4;         &darr;          &there4;
+ *   CLOSED     CLOSED      CLOSED    CLOSED      CLOSED
  * </pre>
  *
- * Any state can transition to {@link #CLOSED} on error; there is no
- * "reopen" &mdash; construct a new session instead.
+ * When {@link ZenohSession.Builder#autoReconnect(boolean)} is enabled,
+ * an unexpected disconnect or lease expiry transitions from {@link #OPEN}
+ * to {@link #RECONNECTING}, re-establishes the transport and handshake,
+ * re-declares active subscriptions and interests, and returns to
+ * {@link #OPEN}.
  */
 public enum SessionState {
 
@@ -32,6 +35,12 @@ public enum SessionState {
 
     /** Handshake complete; {@code publish()} is allowed and KEEP_ALIVE is scheduled. */
     OPEN,
+
+    /**
+     * Unexpected disconnect or lease expiry occurred while {@code autoReconnect}
+     * is enabled; background reconnect and state re-declaration in progress.
+     */
+    RECONNECTING,
 
     /** {@code close()} has been called or a lease expired; CLOSE frame is being emitted. */
     CLOSING,

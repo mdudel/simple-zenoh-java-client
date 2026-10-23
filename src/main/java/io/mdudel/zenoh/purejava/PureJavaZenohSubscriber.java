@@ -83,8 +83,9 @@ import java.util.function.Consumer;
  * registry reflecting what exists right now, which you read with
  * {@link TopicRegistry#snapshot()}.</li>
  * </ul>
- * <p>The older {@link #discoverTopics(String, TopicListener)} remains for
- * callers that want the raw subscriber-declaration callbacks.</p>
+ * <p>The older {@link #discoverTopics(String, TopicListener)} and
+ * {@link #listTopicsNow(String, long)} remain for callers that want the raw
+ * subscriber-declaration callbacks or one-shot snapshots.</p>
  *
  * <h2>Endpoint syntax</h2>
  * <p>
@@ -106,39 +107,47 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
     private static final Logger LOG = System.getLogger(PureJavaZenohSubscriber.class.getName());
 
     // ----- config (immutable) --------------------------------------------
-    private final String connectEndpoint;
-    private final String org;
-    private final String rootCaCertPath;
-    private final String clientCertPath;
-    private final String clientKeyPath;
-    private final char[] keyStorePassword;
+    private final String  connectEndpoint;
+    private final String  org;
+    private final String  rootCaCertPath;
+    private final String  clientCertPath;
+    private final String  clientKeyPath;
+    private final char[]  keyStorePassword;
     private final boolean verifyHostname;
-    private final long leaseMs;
+    private final long    leaseMs;
+    private final int     handshakeTimeoutMs;
+    private final boolean autoReconnect;
+    private final long    reconnectInitialDelayMs;
+    private final long    reconnectMaxDelayMs;
     private final boolean recordTopics;
-    private final String recordTopicsPattern;
+    private final String  recordTopicsPattern;
     private final boolean recordTopicTraffic;
 
     // ----- runtime state -------------------------------------------------
     private volatile ZenohSession session;
-    private volatile Transport transport;
-    private volatile String lastError;
+    private volatile Transport    transport;
+    private volatile String       lastError;
     private final CopyOnWriteArrayList<Subscription> subscriptions = new CopyOnWriteArrayList<>();
     /** Always-on cumulative registry; null unless recording was started. */
     private volatile TopicRegistry recorder;
 
     private PureJavaZenohSubscriber(Builder b) {
-        this.connectEndpoint = nz(b.connectEndpoint);
-        this.org = nz(b.org);
-        this.rootCaCertPath = nz(b.rootCaCertPath);
-        this.clientCertPath = nz(b.clientCertPath);
-        this.clientKeyPath = nz(b.clientKeyPath);
-        this.keyStorePassword = b.keyStorePassword;
-        this.verifyHostname = b.verifyHostname;
-        this.leaseMs = b.leaseMs;
-        this.recordTopics = b.recordTopics;
-        this.recordTopicsPattern = nz(b.recordTopicsPattern).isEmpty()
+        this.connectEndpoint         = nz(b.connectEndpoint);
+        this.org                     = nz(b.org);
+        this.rootCaCertPath          = nz(b.rootCaCertPath);
+        this.clientCertPath          = nz(b.clientCertPath);
+        this.clientKeyPath           = nz(b.clientKeyPath);
+        this.keyStorePassword        = b.keyStorePassword;
+        this.verifyHostname          = b.verifyHostname;
+        this.leaseMs                 = b.leaseMs;
+        this.handshakeTimeoutMs      = b.handshakeTimeoutMs;
+        this.autoReconnect           = b.autoReconnect;
+        this.reconnectInitialDelayMs = b.reconnectInitialDelayMs;
+        this.reconnectMaxDelayMs     = b.reconnectMaxDelayMs;
+        this.recordTopics            = b.recordTopics;
+        this.recordTopicsPattern     = nz(b.recordTopicsPattern).isEmpty()
                 ? "**" : b.recordTopicsPattern;
-        this.recordTopicTraffic = b.recordTopicTraffic;
+        this.recordTopicTraffic      = b.recordTopicTraffic;
     }
 
     private static String nz(String s) {
@@ -156,6 +165,15 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
 
     public boolean isActive() {
         return session != null && session.state() == SessionState.OPEN;
+    }
+
+    public boolean isReconnecting() {
+        return session != null && session.state() == SessionState.RECONNECTING;
+    }
+
+    public long getReconnectCount() {
+        ZenohSession s = session;
+        return s == null ? 0L : s.reconnectCount();
     }
 
     /**
@@ -194,7 +212,11 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
         }
         ZenohSession s = ZenohSession.builder(t)
                 .leaseMs(leaseMs)
+                .handshakeTimeoutMs(handshakeTimeoutMs)
                 .autoConnect(true)
+                .autoReconnect(autoReconnect)
+                .reconnectInitialDelayMs(reconnectInitialDelayMs)
+                .reconnectMaxDelayMs(reconnectMaxDelayMs)
                 .build();
         try {
             s.open();
@@ -333,11 +355,11 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
      * router returns matching an INTEREST.
      *
      * <ul>
-     * <li>{@link #onTopicDeclared(String, long)} — a new subscription exists in
+     * <li>{@link #onTopicDeclared(String, long)} - a new subscription exists in
      * the network for the given key expression.</li>
-     * <li>{@link #onTopicUndeclared(long)} — a previously-seen subscription is
+     * <li>{@link #onTopicUndeclared(long)} - a previously-seen subscription is
      * gone.</li>
-     * <li>{@link #onDiscoveryComplete()} — the router finished replaying
+     * <li>{@link #onDiscoveryComplete()} - the router finished replaying
      * current state; further callbacks (if any) are live updates. Only fires
      * for CURRENT / CURRENT_FUTURE modes.</li>
      * </ul>
@@ -437,6 +459,131 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
      */
     public TopicDiscovery discoverAllTopics(TopicListener listener) throws IOException {
         return discoverTopics("**", listener);
+    }
+
+    // ----- topic listing (synchronous one-shot) ------------------------
+
+    /**
+     * A single topic entry as reported by the router in response to a
+     * one-shot {@link #listTopicsNow(String, long)} call. Backed by the
+     * key expression the router saw declared, plus the peer-local
+     * subscriber id the router associates with it.
+     */
+    public record Topic(String keyExpr, long declaredById) {
+
+        /**
+         * Serialise a list of topics to a compact JSON array of
+         * {@code {"keyExpr":..., "declaredById":...}} objects. Uses only
+         * JDK APIs, in keeping with the pure-Java module's zero-runtime-
+         * dependency invariant.
+         */
+        public static String toJson(java.util.List<Topic> topics) {
+            java.util.Objects.requireNonNull(topics, "topics");
+            StringBuilder sb = new StringBuilder(64 + topics.size() * 48);
+            sb.append('[');
+            boolean first = true;
+            for (Topic t : topics) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"keyExpr\":\"");
+                escapeJson(sb, t.keyExpr());
+                sb.append("\",\"declaredById\":").append(t.declaredById()).append('}');
+            }
+            sb.append(']');
+            return sb.toString();
+        }
+
+        private static void escapeJson(StringBuilder sb, String s) {
+            if (s == null) return;
+            for (int i = 0, n = s.length(); i < n; i++) {
+                char c = s.charAt(i);
+                switch (c) {
+                    case '"'  -> sb.append("\\\"");
+                    case '\\' -> sb.append("\\\\");
+                    case '\b' -> sb.append("\\b");
+                    case '\f' -> sb.append("\\f");
+                    case '\n' -> sb.append("\\n");
+                    case '\r' -> sb.append("\\r");
+                    case '\t' -> sb.append("\\t");
+                    default -> {
+                        if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+                        else          sb.append(c);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Synchronously ask the router for its current set of subscriber
+     * declarations matching a key-expression pattern, and return them as
+     * an ordered snapshot list. Blocks the calling thread until either
+     * the router replays its current state (a FINAL sentinel arrives) or
+     * {@code timeoutMs} elapses; on timeout, returns whatever has been
+     * collected so far rather than throwing.
+     */
+    public java.util.List<Topic> listTopicsNow(String keyExprPattern, long timeoutMs) throws IOException {
+        Objects.requireNonNull(keyExprPattern, "keyExprPattern");
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("timeoutMs must be > 0, got " + timeoutMs);
+        }
+        ZenohSession s = session;
+        if (s == null || s.state() != SessionState.OPEN) {
+            throw new IOException("PureJavaZenohSubscriber is not started");
+        }
+
+        java.util.List<Topic> collected = new CopyOnWriteArrayList<>();
+        CountDownLatch done = new CountDownLatch(1);
+
+        long interestId;
+        try {
+            interestId = s.declareInterest(Interest.Mode.CURRENT,
+                    Interest.OPT_SUBSCRIBERS, keyExprPattern,
+                    (declare, isFinal) -> {
+                        if (isFinal) {
+                            done.countDown();
+                            return;
+                        }
+                        Declare.Body body = declare.body();
+                        if (body.kind() == Declare.Body.BodyKind.DECLARE_SUBSCRIBER) {
+                            var ds = body.asDeclareSubscriber();
+                            String k = s.resolveRemoteKey(ds.keyScope(), ds.keySuffix());
+                            if (k != null) {
+                                collected.add(new Topic(k, ds.id()));
+                            }
+                        }
+                    });
+        } catch (io.mdudel.zenoh.purejava.session.SessionException e) {
+            lastError = "listTopicsNow failed: " + e.getMessage();
+            throw new IOException(lastError, e);
+        }
+
+        boolean completed;
+        try {
+            completed = done.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            LOG.log(Level.DEBUG, () -> "listTopicsNow interrupted after "
+                    + collected.size() + " entries");
+            try { s.finalInterest(interestId); } catch (Exception ignored) {}
+            return java.util.List.copyOf(collected);
+        }
+
+        if (!completed) {
+            LOG.log(Level.DEBUG, () -> "listTopicsNow timed out after "
+                    + timeoutMs + "ms with " + collected.size()
+                    + " entries collected (no FINAL sentinel from router)");
+            try { s.finalInterest(interestId); } catch (Exception ignored) {}
+        }
+        return java.util.List.copyOf(collected);
+    }
+
+    /**
+     * Sugar: {@code listTopicsNow("**", timeoutMs)}. Snapshot every
+     * subscriber declaration the router currently knows about.
+     */
+    public java.util.List<Topic> listAllTopicsNow(long timeoutMs) throws IOException {
+        return listTopicsNow("**", timeoutMs);
     }
 
     // ----- topic registry ------------------------------------------------
@@ -895,17 +1042,21 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
      */
     public static final class Builder {
 
-        private String connectEndpoint = "";
-        private String org = "";
-        private String rootCaCertPath = "";
-        private String clientCertPath = "";
-        private String clientKeyPath = "";
-        private char[] keyStorePassword = "changeit".toCharArray();
-        private boolean verifyHostname = true;
-        private long leaseMs = ZenohSession.DEFAULT_LEASE_MS;
-        private boolean recordTopics = false;
-        private String recordTopicsPattern = "**";
-        private boolean recordTopicTraffic = true;
+        private String  connectEndpoint         = "";
+        private String  org                     = "";
+        private String  rootCaCertPath          = "";
+        private String  clientCertPath          = "";
+        private String  clientKeyPath           = "";
+        private char[]  keyStorePassword        = "changeit".toCharArray();
+        private boolean verifyHostname          = true;
+        private long    leaseMs                 = ZenohSession.DEFAULT_LEASE_MS;
+        private int     handshakeTimeoutMs      = ZenohSession.DEFAULT_HANDSHAKE_MS;
+        private boolean autoReconnect           = false;
+        private long    reconnectInitialDelayMs = ZenohSession.DEFAULT_RECONNECT_INITIAL_DELAY_MS;
+        private long    reconnectMaxDelayMs     = ZenohSession.DEFAULT_RECONNECT_MAX_DELAY_MS;
+        private boolean recordTopics            = false;
+        private String  recordTopicsPattern     = "**";
+        private boolean recordTopicTraffic      = true;
 
         public Builder connectEndpoint(String v) {
             this.connectEndpoint = v;
@@ -944,6 +1095,31 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
 
         public Builder leaseMs(long v) {
             this.leaseMs = v;
+            return this;
+        }
+
+        /**
+         * Per-step Zenoh handshake receive timeout (ms). Default
+         * {@link ZenohSession#DEFAULT_HANDSHAKE_MS}.
+         */
+        public Builder handshakeTimeoutMs(int v) {
+            this.handshakeTimeoutMs = v;
+            return this;
+        }
+
+        /** Enable automatic session reconnect and state re-declaration on unexpected disconnects. */
+        public Builder autoReconnect(boolean v) {
+            this.autoReconnect = v;
+            return this;
+        }
+
+        public Builder reconnectInitialDelayMs(long v) {
+            this.reconnectInitialDelayMs = v;
+            return this;
+        }
+
+        public Builder reconnectMaxDelayMs(long v) {
+            this.reconnectMaxDelayMs = v;
             return this;
         }
 

@@ -39,11 +39,25 @@ public interface Transport extends AutoCloseable {
     /**
      * Open the link. After this returns, {@link #send(byte[])} and
      * {@link #receive(long, TimeUnit)} become usable. May only be
-     * called once per instance.
+     * called once per instance (use {@link #reconnect()} to reopen after
+     * a disconnect).
      *
      * @throws TransportException on connect failure
      */
     void connect() throws TransportException;
+
+    /**
+     * Reopen a closed or disconnected link to the same peer endpoint.
+     * Implementations must ensure any previous underlying connection is
+     * cleanly closed, inbound queues/errors are cleared, and a fresh
+     * underlying connection is established.
+     *
+     * @throws TransportException if reconnecting fails or is unsupported
+     */
+    default void reconnect() throws TransportException {
+        throw new TransportException(
+                "reconnect not supported by " + getClass().getSimpleName());
+    }
 
     /**
      * Enqueue one batch of bytes to be written to the peer. Blocks
