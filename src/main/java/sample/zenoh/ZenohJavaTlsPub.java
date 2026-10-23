@@ -51,8 +51,7 @@ import java.util.Locale;
  * in args, in any order, stripped from the positional sequence before
  * defaults apply): see {@link ZenohJavaPub}'s class-level Javadoc for
  * the full list. Same names, same semantics, same skip-when-default
- * rules -- omitting them produces byte-identical wire output to the
- * pre-QoS client.
+ * rules. Omitting them emits no extension bytes at all.
  *
  * <ul>
  *   <li>{@code --priority=<name>}</li>
@@ -189,8 +188,7 @@ public class ZenohJavaTlsPub {
 
         // ----- 3. Compose Qos ------------------------------------------
         // Leave qos at DEFAULT if the caller passed no QoS flags at
-        // all; that suppresses the QoS extension entirely so the wire
-        // byte matches pre-QoS behaviour exactly.
+        // all; that suppresses the QoS extension entirely.
         Qos qos;
         if (priority == null && congestion == CongestionControl.DROP && !express) {
             qos = Qos.DEFAULT;
@@ -221,8 +219,7 @@ public class ZenohJavaTlsPub {
             // verifyHostname(false) matches the sibling sub sample for
             // the typical IP-endpoint field case. All QoS / Timestamp /
             // NodeId knobs are opt-in; passing DEFAULT / false / 0
-            // gives byte-identical wire output vs the pre-QoS
-            // publisher.
+            // emits no extension bytes at all.
             PureJavaZenohPublisher zenohPublisher = PureJavaZenohPublisher.builder()
                     .connectEndpoint(endpoint)
                     .keyExpr(key)

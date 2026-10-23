@@ -24,8 +24,8 @@ the classic Zenoh form or a URI:
 
 | Scheme | Classic form         | URI form                        | Transport      | TLS args required |
 |--------|----------------------|---------------------------------|----------------|-------------------|
-| `tcp`  | `tcp/host:port`      | —                               | Plain TCP      | no                |
-| `tls`  | `tls/host:port`      | —                               | TCP + TLS      | see below         |
+| `tcp`  | `tcp/host:port`      | n/a                             | Plain TCP      | no                |
+| `tls`  | `tls/host:port`      | n/a                             | TCP + TLS      | see below         |
 | `ws`   | `ws/host:port`       | `ws://host:port/path`           | WebSocket      | no                |
 | `wss`  | `wss/host:port`      | `wss://host:port/path`          | WebSocket + TLS| see below         |
 
@@ -95,8 +95,9 @@ matching Rust ordinals 0..7):
 - bit 5 (F_FLAG): reserved for unstable `BlockFirst` (not exposed)
 - Reliability is **NOT** in this byte; it is per-subscription.
 
-**Skip-when-default rules** (matching the Rust codec, keeping wire
-byte-identical to the pre-QoS client):
+**Skip-when-default rules** (matching the Rust codec). Anything sitting
+at its default emits nothing at all, so the Z-flag stays clear and no
+extension bytes hit the wire:
 - `Qos.DEFAULT` (or `null`) -> no QoS extension emitted (ext id 0x01).
 - `Timestamp == null` -> no Timestamp extension emitted (ext id 0x02).
 - `nodeId == 0` -> no NodeId extension emitted (ext id 0x03).
@@ -128,9 +129,10 @@ runPub.bat --priority=background --congestion=block tcp/[::1]:7447 bulk/dump 1
 
 `PureJavaZenohSubscriber.builder()`:
 
-Identical to the publisher **minus `keyExpr`** (the subscriber takes
-the key expression per-subscription, not at build time). Same TLS/mTLS
-options, same defaults, same `org` prefix behaviour.
+The connection and TLS options are identical to the publisher **minus
+`keyExpr`** (the subscriber takes the key expression per-subscription,
+not at build time). Same defaults, same `org` prefix behaviour. The
+three `recordTopics*` options have no publisher equivalent.
 
 | Method                                    | Default                        | Purpose |
 |-------------------------------------------|--------------------------------|---------|
@@ -142,6 +144,9 @@ options, same defaults, same `org` prefix behaviour.
 | `keyStorePassword(char[])`                | `"changeit"`                   | PKCS12 password. |
 | `verifyHostname(boolean)`                 | `true`                         | Hostname verification. |
 | `leaseMs(long)`                           | `ZenohSession.DEFAULT_LEASE_MS`| Session lease. |
+| `recordTopics(boolean)`                   | `false`                        | Record every topic seen for the life of the subscriber; read it back with `recordedTopics()`. |
+| `recordTopicsPattern(String)`             | `"**"`                         | Key expression the recorder watches. Ignored unless `recordTopics` is set. |
+| `recordTopicTraffic(boolean)`             | `true`                         | Whether the recorder also subscribes, to catch keys carrying data that nobody declared. Ignored unless `recordTopics` is set. |
 
 ## Builder options: Scout
 
@@ -168,8 +173,8 @@ Zenoh scouting group + a sensible active-mode cadence.
 | `receiveBufferBytes(int)`                 | `65507`                        | Per-packet receive buffer (UDP max). |
 | `listener(ScoutListener)`                 | *none*                         | Single listener attached at build time. For multiple, use `scout.addListener(...)`. |
 
-**Mode semantics.** `ACTIVE` always includes listening — SCOUT replies
-arrive on the same socket. `PASSIVE` skips the SCOUT scheduler; you
+**Mode semantics.** `ACTIVE` always includes listening, since SCOUT
+replies arrive on the same socket. `PASSIVE` skips the SCOUT scheduler; you
 only hear nodes that self-advertise. Some routers auto-advertise via
 periodic multicast HELLO on their own, so passive discovery still
 works against them, just slower.
@@ -390,8 +395,8 @@ Optional<DiscoveredNode> node = scout.get(someZid);
 scout.scoutNow();
 ```
 
-Callbacks and `snapshot()` are always both available on the same
-scout instance — use whichever fits your UI model, or use both.
+Callbacks and `snapshot()` are both available on the same scout
+instance. Use whichever fits your UI model, or use both.
 
 ---
 
@@ -519,6 +524,103 @@ try (PureJavaZenohSubscriber.TopicDiscovery td =
   To catch publishers, subscribe to `**` and observe `Sample.key()`.
 - Sugar: `discoverAllTopics(listener)` is exactly
   `discoverTopics("**", listener)`.
+- This is the low-level callback API. If you want a merged list that
+  also covers queryables, liveliness tokens, and observed traffic, go
+  to `listTopics` or `topics` below.
+
+### Topic registry (a list of active topics, as data)
+
+Zenoh has no topic registry of its own. So "what topics are active"
+isn't a question you can look up, it's one you have to assemble out of
+several partial views. That's what these calls do, and they tell you
+where every entry came from.
+
+```java
+// Always-on: record everything for the life of the subscriber.
+PureJavaZenohSubscriber subscriber = PureJavaZenohSubscriber.builder()
+        .connectEndpoint("tls/host:7447")
+        .recordTopics(true)
+        .build();
+subscriber.start();
+// ... any time later, non-blocking ...
+List<TopicInfo> everything = subscriber.recordedTopics();
+List<TopicInfo> stillThere = subscriber.topicRegistry().activeOnly();
+
+// One-shot: block for a bounded window, then return the merged list.
+List<TopicInfo> topics = subscriber.listTopics("**", Duration.ofSeconds(5));
+
+// Live: poll a registry for as long as you keep it open.
+try (TopicRegistry registry = subscriber.topics("demo/**", true)) {
+    registry.awaitCurrent(Duration.ofSeconds(2));
+    List<TopicInfo> now = registry.snapshot();
+}
+```
+
+`TopicInfo` is an immutable record: `keyExpr()`, `sources()`,
+`activeSources()`, `firstSeenMs()`, `lastSeenMs()`, `sampleCount()`,
+plus the helpers `active()`, `hasTraffic()` and `isDeclarationOnly()`.
+Snapshots come back sorted by key expression.
+
+`sources()` never shrinks. It's every channel that's seen the topic
+since the registry picked it up. `activeSources()` is the subset whose
+evidence still holds, and `active()` is just
+`!activeSources().isEmpty()`. `lastSeenMs()` only moves on positive
+evidence, so a withdrawal won't touch it. On a dead topic that tells
+you when it was last genuinely there.
+
+Here's what each `TopicSource` is actually worth:
+
+| Source | Proves | Blind to |
+| --- | --- | --- |
+| `DECLARED_SUBSCRIBER` | Someone is listening on this key. | A key with a publisher but no subscriber. |
+| `DECLARED_QUERYABLE` | Someone answers queries on this key. | Everything that isn't a queryable. |
+| `LIVENESS_TOKEN` | A peer is explicitly saying "I'm alive here". | Apps that never declare tokens. |
+| `OBSERVED_TRAFFIC` | Data is really flowing on this key. | Any topic that stayed quiet while you watched. |
+
+- `recordTopics(true)` on the builder is the one you want. `start()`
+  opens a cumulative registry and leaves it running, so
+  `recordedTopics()` comes back instantly with everything seen since
+  start, dead topics included. Tune it with `recordTopicsPattern`
+  (default `**`) and `recordTopicTraffic` (default `true`). Same thing
+  at runtime via `startRecordingTopics()` / `stopRecordingTopics()` /
+  `isRecordingTopics()`, and `stop()` cleans up after you. Can't open
+  the registry? `start()` logs a WARNING and carries on, and
+  `recordedTopics()` throws `IllegalStateException` instead of handing
+  back an empty list that lies to you.
+- `topics(pattern, observeTraffic)` fires off one `CURRENT_FUTURE`
+  INTEREST covering subscribers, queryables, and tokens, then keeps the
+  registry current as declarations come and go. Pass
+  `observeTraffic = true` and it also opens a real subscription on the
+  pattern to count the keys that show up.
+- Registries are **live** or **cumulative**. Live drops a topic the
+  moment its last declaration is withdrawn. Cumulative never drops
+  anything, it just flags departures with `active() == false`.
+  `topics(pattern, observeTraffic)` gives you live, the recorder uses
+  cumulative, and the 3-arg
+  `topics(pattern, observeTraffic, cumulative)` lets you pick.
+  Observed traffic sticks in both, because a message that really
+  arrived isn't something a later event gets to undo.
+- `observeTraffic = true` on a broad pattern drags in every matching
+  message just to read its key. An ACL might also let you discover but
+  not subscribe. Pass `false` and you stay passive.
+- `listTopics(pattern, timeout)` is `topics(pattern, true)` plus a
+  bounded wait. Waits for the router's replay, spends whatever's left
+  of the budget watching traffic, closes up, hands you the snapshot.
+  `listAllTopics(timeout)` is the `"**"` shorthand.
+- You can't swap that timeout for a "done" signal, and it's worth
+  understanding why. Declaration replay does finish. Traffic
+  observation never will, because a silent topic and a nonexistent one
+  look exactly the same from here. **Every result is a lower bound.
+  Not being in the list proves nothing.**
+- Key expressions come back fully resolved. Routers intern long keys
+  and then ship a `(scope, suffix)` pair on the wire, and the registry
+  expands the alias for you. Never saw the mapping? That entry gets
+  logged at WARNING and dropped, rather than handed to you as a
+  truncated fragment you'd have no way to spot.
+- Set `org` on the builder and it gets prepended to the pattern, same
+  as `subscribe(...)`.
+- All of this rides your normal session, so it behaves the same over
+  TCP, TLS, mTLS, and WebSocket. No admin space, no REST plugin.
 
 ---
 
@@ -584,8 +686,8 @@ has returned:
 - `scout.snapshot()` / `scout.get(...)`: safe from any thread.
 - `ScoutListener` callbacks: fire on the scout's reader threads
   (one per NIC) under the registry lock. Per-ZID event order is
-  guaranteed. Do not block inside the callback — hand off to an
-  executor for long work.
+  guaranteed. Don't block inside the callback. Hand long work off to
+  an executor.
 - `close()` / `stop()`: safe to call from any thread, and safe to call
   more than once (extra calls are no-ops).
 
@@ -617,7 +719,7 @@ For advanced TLS settings (enabled protocols, cipher suites, handshake
 timeout, PKCS11) you drop below the client class and build a
 `TlsConfig` directly, then construct `TlsTransport` / `WsTransport`
 by hand. See `TlsConfig.Builder` in the source
-(`src/io/mdudel/zenoh/purejava/transport/TlsConfig.java`); the
+(`src/main/java/io/mdudel/zenoh/purejava/transport/TlsConfig.java`); the
 builder methods there include `enabledProtocols(...)`,
 `enabledCipherSuites(...)`, `handshakeTimeoutMs(...)`,
 `needClientAuth(...)`, `trustStoreType(...)`, `keyStoreType(...)`.
@@ -652,7 +754,7 @@ instead.
 **Zenoh features not implemented:**
 - **Peer mode**: this client only speaks Zenoh **client** mode
   (connects to a router). It cannot act as a peer or a router itself.
-  The scout is a passive multicast observer, not a peer — it never
+  The scout is a passive multicast observer, not a peer. It never
   joins the mesh as a session.
 - **Gossip discovery**: `PureJavaZenohScout` decodes direct multicast
   HELLOs only; it does not parse peer-to-peer gossip about other

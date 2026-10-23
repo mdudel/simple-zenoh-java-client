@@ -40,8 +40,8 @@ import java.util.Objects;
  * <p>{@link #DEFAULT} is {@code (Priority.DATA, CongestionControl.DROP,
  * express=false)}, matching the Rust
  * {@code QoSType::DEFAULT}. When a caller passes {@link #DEFAULT},
- * publishers SHOULD omit the QoS extension entirely so the wire
- * output is byte-identical to the pre-QoS behaviour of this client.</p>
+ * publishers SHOULD omit the QoS extension entirely so that no
+ * extension bytes are written for it.</p>
  */
 public record Qos(Priority priority, CongestionControl congestionControl, boolean express) {
 

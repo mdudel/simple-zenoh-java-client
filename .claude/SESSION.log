@@ -8,6 +8,236 @@ what was done, decisions made, and what's next.
 
 ---
 
+## 2026-09-27 (drop "pre-QoS client" framing, JAR-vs-embed guidance)
+
+Removed all 17 references to the "pre-QoS client". That phrase compared
+current behaviour against an older build of this client that nobody but
+Marty ever ran, so it explained nothing to a new reader. Each site now
+states the invariant directly instead: a default-valued QoS / Timestamp
+/ NodeId argument suppresses its extension entirely, the Z-flag stays
+clear, and no extension bytes are written. Touched README.md, API.md,
+runTlsPub.bat, PureJavaZenohPublisher, PushExts, Qos, ZenohJavaPub,
+ZenohJavaTlsPub, and PushExtsTest.
+
+In PushExtsTest the comparison itself is still valid, it just had the
+wrong names on it. The test compares the short `Push.ofPut` overload
+against the extended one, not against any historical build, so the
+locals went from `pre`/`post` to `shortForm`/`extended`.
+
+Also in README.md:
+- "platform helpers" is now "sample code".
+- The Build & run section explains the two ways to consume this: take
+  the JAR from `target/` and put it on your classpath (the normal
+  path, pointing at the code examples further down), or copy the
+  `io/mdudel/zenoh/purejava` source tree into your own project and
+  accept that your build now owns it.
+
+Verified: `mvn -o package` BUILD SUCCESS, 90 tests pass. Javadoc with
+the CI flag (`-Xdoclint:none`) exits 0. README.md and API.md still have
+zero em-dashes and zero banned words.
+
+Next: still nothing from the topic-discovery feature is committed, and
+the 8-commit trailer rewrite still needs `git push --force-with-lease
+origin main` (the other laptop then needs `git fetch origin && git
+reset --hard origin/main`, not a plain pull).
+
+---
+
+## 2026-09-27 (documentation voice rules)
+
+Marty supplied a persona spec for documentation: casual spoken voice,
+contractions, varied sentence length, no corporate filler words, no
+structural fluff, asides allowed.
+
+Scoping decisions he made when asked:
+- Applies to README.md and API.md ONLY. All javadoc keeps the formal
+  register, because the generated docs on GitHub Pages are reference
+  material and `@param` tags read badly as chat.
+- Does NOT change how I talk in session. Docs only.
+
+Written into `CLAUDE.md` under "Documentation style", now split into
+two explicit registers so the boundary is unambiguous. Kept the
+em-dash ban at the top as applying everywhere, since that rule is
+orthogonal to register and predates this.
+
+Retrofitted the topic-discovery documentation written earlier today in
+both files. Left the rest of README.md and API.md in the old voice for
+now; that is a bigger rewrite of already-committed prose and is offered
+rather than assumed.
+
+Also cleaned up 6 em-dashes in API.md (all pre-existing, all violating
+the older global rule) and 3 `&mdash;` entities I had introduced in the
+`PureJavaZenohSubscriber` class javadoc.
+
+Still outstanding: 46 `&mdash;` entities across 15 javadoc files, all
+pre-existing. Left alone deliberately, because doing it piecemeal is
+worse than one atomic sweep. Worth doing.
+
+Verified after: 90 tests green, javadoc exit 0 with the workflow's flag
+set, zero em-dashes and zero banned words in README.md and API.md.
+
+## 2026-09-27 (topic recording mode)
+
+Marty asked where topic discovery lives, and for a mode where the
+subscriber records topics continuously so a later query reports
+everything seen since start rather than only what is there at that
+instant.
+
+Where it lives: split across both, on purpose. The transport and the
+callbacks are on `PureJavaZenohSubscriber`, because discovery rides
+the same session as ordinary subscribing and there is nothing to
+connect separately. The state is in `TopicRegistry` / `TopicInfo` /
+`TopicSource`, which are their own classes in the same package so the
+registry mutators can stay package-private. Contrast with
+`PureJavaZenohScout`, which IS a separate top-level class, because it
+speaks UDP multicast and never opens a session at all.
+
+Added a cumulative mode to `TopicRegistry`, chosen at construction:
+- Live (default, what was there before): a topic drops out once its
+  last declaration is withdrawn.
+- Cumulative: nothing is ever removed; departed topics stay with
+  `active()` false.
+Observed traffic remains sticky in both, on the grounds that a message
+really having arrived is not something a later event can retract.
+
+`TopicInfo` changed shape to carry the distinction. `sources()` is now
+cumulative over the entry's lifetime and never shrinks;
+`activeSources()` is the subset still standing; `active()` is
+`!activeSources().isEmpty()`. Added `TopicInfo.active(...)` as a
+factory for the all-current case. Also stopped `recordUndeclaration`
+advancing `lastSeenMs`: a withdrawal is negative evidence, so on an
+inactive topic the field now answers "when was it last really there".
+
+Subscriber additions:
+- Builder: `recordTopics(boolean)` (default false),
+  `recordTopicsPattern(String)` (default `**`),
+  `recordTopicTraffic(boolean)` (default true).
+- `start()` opens the recorder when the flag is set. Deliberately NOT
+  fatal on failure: a router can allow the session and refuse the
+  discovery interest or the wildcard subscription, and that must not
+  stop the caller subscribing to the keys they came for. Logs WARNING
+  and carries on.
+- `startRecordingTopics()` / `stopRecordingTopics()` /
+  `isRecordingTopics()` / `topicRegistry()` / `recordedTopics()`.
+- `stop()` closes the recorder FIRST, so its FINAL interest goes out
+  while the session is still open.
+- New 3-arg `topics(pattern, observeTraffic, cumulative)`; the 2-arg
+  form delegates with cumulative=false, so existing behaviour is
+  unchanged.
+
+`recordedTopics()` throws IllegalStateException when recording was
+never started, rather than returning an empty list. An empty list is
+indistinguishable from "found nothing", which is precisely the wrong
+answer to give for a discovery API whose whole documented weakness is
+that absence proves nothing.
+
+Tests 82 to 90 (8 new in `TopicRegistryTest` covering cumulative
+retention, activeOnly, partial withdrawal, and the lastSeenMs rule).
+All green. Javadoc with the workflow's exact flag set is exit 0.
+README and API.md updated, including the subscriber builder table.
+
+Next: unchanged from the entry below. Still nothing committed, the
+force-push is still outstanding, and none of this has met a live
+router.
+
+## 2026-09-27 (topic discovery: TopicRegistry API)
+
+Question asked: can a Zenoh subscriber get a list of active topics,
+assuming only mTLS or HTTPS is available?
+
+Answer: not authoritatively. Zenoh has no topic registry. There are
+three partially-overlapping mechanisms, and we can reach two of them
+over an ordinary session:
+1. INTEREST/DECLARE, which tells you who has declared subscribers,
+   queryables and liveliness tokens. Reachable, and now used.
+2. Passive wildcard observation, which tells you what actually
+   carried data. Reachable, and now used.
+3. The router's admin space, which is authoritative but needs either
+   the REST plugin over HTTPS or Request/Response wire messages. We
+   have neither. Marty chose "not now" on probing the GOAT NET router
+   over HTTPS, so nothing was sent to it.
+
+Decision: return the union of declared plus observed, and carry
+provenance on every entry so the caller can weigh it. Approved scope
+was Phases 0 through 3, which is all of what follows.
+
+Phase 0, a real bug fix. `discoverTopics` ignored `keyScope` and
+reported `keySuffix` alone. The wire carries keys as a
+`(scope, suffix)` pair and routers intern long keys routinely, so
+against any real router this was silently returning empty strings or
+truncated fragments. Made `ZenohSession.resolveRemoteKey` public and
+called it. Unresolvable aliases are now logged at WARNING and omitted,
+because a fragment the caller cannot distinguish from a real key is
+worse than nothing.
+
+Phase 3, wire coverage. Added `DeclareQueryable` (0x04),
+`UndeclareQueryable` (0x05), `DeclareToken` (0x06) and
+`UndeclareToken` (0x07), and wired all four into `Declare.Body`
+(BodyKind 5 values to 9). DeclareFinal (0x1A) still lands as RAW,
+which is fine since the session already surfaces it as the isFinal
+flag on the discovery callback.
+
+Phases 1 and 2, the API. New `TopicSource` (4-value enum),
+`TopicInfo` (immutable record, Comparable by keyExpr) and
+`TopicRegistry` in package `io.mdudel.zenoh.purejava`, deliberately
+alongside `PureJavaZenohSubscriber` so the registry mutators can stay
+package-private. Two new entry points:
+  - `topics(pattern, observeTraffic)` returns a live registry you poll
+    with `snapshot()`, matching the pull style of
+    `PureJavaZenohScout.snapshot()`.
+  - `listTopics(pattern, timeout)` blocks for a bounded window and
+    returns `List<TopicInfo>`, plus `listAllTopics(timeout)` sugar.
+`discoverTopics` is untouched and still works, now documented as the
+low-level callback API.
+
+Design notes worth keeping:
+- The reverse index is keyed on `(TopicSource, id)`, not on id alone.
+  Subscriber, queryable and token ids are separate spaces, so
+  subscriber 5 and token 5 are different things, and undeclare carries
+  only the id. There is a test pinning this.
+- Each entry holds an `EnumMap<TopicSource, Set<Long>>`, so removing
+  one declaration does not drop a source another declaration still
+  justifies.
+- Observed traffic is sticky. Once a message is seen on a key, the
+  entry survives withdrawal of every declaration. Rationale: traffic
+  is a stronger claim than a declaration, and losing it would make the
+  result flap.
+- `close()` counts the latch down so it cannot strand a caller parked
+  in `awaitCurrent`.
+- `topics()` folds `org` into the pattern once and then calls
+  `session.declareSubscriber` directly, NOT `subscribe()`, because
+  `KeyExpr.resolveKey` is not idempotent for a non-empty org.
+
+Tests: two new JUnit classes, `TopicRegistryTest` (15) and
+`DeclareBodyRoundTripTest` (9). Suite is 58 to 82, all green.
+
+Doc: new "Topic discovery: listing active topics" section in README
+and "Topic registry" section in API.md, both stating plainly that the
+result is a lower bound and absence is never proof of absence. Also
+fixed two broken `@link` refs in `Declare.java` and one stale
+pre-Maven source path in API.md.
+
+Trap worth remembering: verifying the javadoc CI job locally needs the
+workflow's exact flags. Without `-Xdoclint:none` javadoc exits 1 on
+~30 pre-existing doc-comment complaints in the wire classes. Also note
+that piping javadoc into `head` gives you head's exit code, not
+javadoc's, which is how "exit 0" got recorded last session. With the
+CI flag set it is genuinely exit 0.
+
+Next:
+- NOTHING IN THIS FEATURE IS COMMITTED. Whole thing is working-tree
+  only.
+- The 8-commit trailer rewrite from the previous session is still
+  local and NOT pushed. `git push --force-with-lease origin main`.
+  The OTHER LAPTOP must then do `git fetch origin && git reset --hard
+  origin/main`, not a plain pull, or it will re-merge the old history.
+- Untested against a live router. Everything so far is offline: unit
+  tests plus wire round-trips. The INTEREST options mask
+  (SUBSCRIBERS|QUERYABLES|TOKENS) and the router's DeclareFinal
+  behaviour both need a real session to confirm.
+- Optional: point `ZenohJavaTlsSub` at the new registry. It still does
+  observation-only key collection by hand.
+
 ## 2026-09-25 (publisher docs)
 - Expanded README's "Publisher: core sample code" section. Kept the
   minimal example, added an "Every builder parameter" subsection that

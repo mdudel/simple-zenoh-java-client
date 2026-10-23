@@ -24,7 +24,9 @@ import io.mdudel.zenoh.purejava.transport.Transport;
 import io.mdudel.zenoh.purejava.transport.WsTransport;
 import io.mdudel.zenoh.purejava.wire.KeyExpr;
 import io.mdudel.zenoh.purejava.wire.messages.Declare;
+import io.mdudel.zenoh.purejava.wire.messages.DeclareQueryable;
 import io.mdudel.zenoh.purejava.wire.messages.DeclareSubscriber;
+import io.mdudel.zenoh.purejava.wire.messages.DeclareToken;
 import io.mdudel.zenoh.purejava.wire.messages.Interest;
 
 import java.io.IOException;
@@ -34,6 +36,8 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -60,6 +64,27 @@ import java.util.function.Consumer;
  * <p>
  * Under the hood both use the same {@link Subscription} primitive; the callback
  * form is a thin wrapper around the pull queue.</p>
+ *
+ * <h2>Finding out what topics exist</h2>
+ * <p>
+ * Zenoh has no topic registry, so there is no authoritative list to fetch.
+ * What this client can do is merge several partial views, and it reports
+ * where each topic came from so a caller can weigh the evidence; see
+ * {@link TopicSource}. Three ways in, in rough order of usefulness:</p>
+ * <ul>
+ * <li><b>Record continuously.</b> Set {@code recordTopics(true)} on the
+ * builder, then call {@link #recordedTopics()} whenever you like. The
+ * answer covers everything seen since {@link #start()}, including topics
+ * that have since gone away, and it never blocks.</li>
+ * <li><b>Ask once.</b> {@link #listTopics(String, java.time.Duration)}
+ * blocks for a bounded window and returns what it found in that window
+ * only.</li>
+ * <li><b>Poll a live view.</b> {@link #topics(String, boolean)} returns a
+ * registry reflecting what exists right now, which you read with
+ * {@link TopicRegistry#snapshot()}.</li>
+ * </ul>
+ * <p>The older {@link #discoverTopics(String, TopicListener)} remains for
+ * callers that want the raw subscriber-declaration callbacks.</p>
  *
  * <h2>Endpoint syntax</h2>
  * <p>
@@ -89,12 +114,17 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
     private final char[] keyStorePassword;
     private final boolean verifyHostname;
     private final long leaseMs;
+    private final boolean recordTopics;
+    private final String recordTopicsPattern;
+    private final boolean recordTopicTraffic;
 
     // ----- runtime state -------------------------------------------------
     private volatile ZenohSession session;
     private volatile Transport transport;
     private volatile String lastError;
     private final CopyOnWriteArrayList<Subscription> subscriptions = new CopyOnWriteArrayList<>();
+    /** Always-on cumulative registry; null unless recording was started. */
+    private volatile TopicRegistry recorder;
 
     private PureJavaZenohSubscriber(Builder b) {
         this.connectEndpoint = nz(b.connectEndpoint);
@@ -105,6 +135,10 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
         this.keyStorePassword = b.keyStorePassword;
         this.verifyHostname = b.verifyHostname;
         this.leaseMs = b.leaseMs;
+        this.recordTopics = b.recordTopics;
+        this.recordTopicsPattern = nz(b.recordTopicsPattern).isEmpty()
+                ? "**" : b.recordTopicsPattern;
+        this.recordTopicTraffic = b.recordTopicTraffic;
     }
 
     private static String nz(String s) {
@@ -172,6 +206,20 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
         }
         this.transport = t;
         this.session = s;
+
+        if (recordTopics) {
+            // Deliberately not fatal. A router may allow the session but
+            // refuse the discovery interest or the wildcard subscription,
+            // and that should not stop the caller subscribing to the keys
+            // they actually came for.
+            try {
+                startRecordingTopics();
+            } catch (IOException | RuntimeException e) {
+                lastError = "topic recording failed to start: " + e.getMessage();
+                LOG.log(Level.WARNING, lastError
+                        + "; continuing without it (recordedTopics() will throw)");
+            }
+        }
     }
 
     /**
@@ -179,6 +227,9 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
      * Idempotent.
      */
     public void stop() {
+        // Before the subscriptions, so the recorder gets a chance to send
+        // its FINAL interest while the session is still open.
+        stopRecordingTopics();
         for (Subscription sub : subscriptions) {
             try {
                 sub.close();
@@ -345,11 +396,27 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
                         Declare.Body body = declare.body();
                         if (body.kind() == Declare.Body.BodyKind.DECLARE_SUBSCRIBER) {
                             DeclareSubscriber ds = body.asDeclareSubscriber();
-                            String k = ds.keySuffix() == null ? "" : ds.keySuffix();
-                            try {
-                                listener.onTopicDeclared(k, ds.id());
-                            } catch (RuntimeException re) {
-                                /* absorb */ }
+                            // The wire carries the key as a (scope, suffix)
+                            // pair. A nonzero scope references a keyexpr
+                            // alias the router interned earlier, so the
+                            // suffix alone is only a fragment. Resolve it
+                            // rather than reporting a truncated key.
+                            String k = s.resolveRemoteKey(ds.keyScope(), ds.keySuffix());
+                            if (k == null) {
+                                // Alias we have no mapping for. Reporting the
+                                // bare suffix here would be worse than
+                                // reporting nothing, because the caller
+                                // cannot tell a fragment from a real key.
+                                LOG.log(Level.WARNING,
+                                        "discoverTopics: unresolved keyexpr alias scope={0}"
+                                        + " for subscriber id={1}; topic omitted",
+                                        ds.keyScope(), ds.id());
+                            } else {
+                                try {
+                                    listener.onTopicDeclared(k, ds.id());
+                                } catch (RuntimeException re) {
+                                    /* absorb */ }
+                            }
                         } else if (body.kind() == Declare.Body.BodyKind.UNDECLARE_SUBSCRIBER) {
                             try {
                                 listener.onTopicUndeclared(body.asUndeclareSubscriber().id());
@@ -370,6 +437,315 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
      */
     public TopicDiscovery discoverAllTopics(TopicListener listener) throws IOException {
         return discoverTopics("**", listener);
+    }
+
+    // ----- topic registry ------------------------------------------------
+    /**
+     * Open a live {@link TopicRegistry} over every discovery channel this
+     * client can reach.
+     *
+     * <p>Where {@link #discoverTopics(String, TopicListener)} is a raw
+     * callback over subscriber declarations alone, this merges four sources
+     * into one queryable set: declared subscribers, declared queryables,
+     * liveliness tokens, and optionally the keys of messages that actually
+     * arrive. Each entry records which sources saw it, so the caller can
+     * tell "someone is listening here" from "data is flowing here". See
+     * {@link TopicSource} for what each one proves.</p>
+     *
+     * <p>If {@code org} is set on the builder it is prepended to the
+     * pattern, matching {@link #subscribe(String)}. Both channels use the
+     * same resulting pattern.</p>
+     *
+     * <p>Setting {@code observeTraffic} declares a real subscription on the
+     * pattern. On a busy network with a broad pattern that can mean a great
+     * deal of inbound data, all of which is discarded after its key is
+     * noted. It may also be refused by an ACL that allows discovery but not
+     * subscription. Pass {@code false} to stay purely passive.</p>
+     *
+     * <p>The caller owns the returned registry and must {@link
+     * TopicRegistry#close()} it. Closing this subscriber also closes any
+     * traffic subscription the registry opened.</p>
+     *
+     * @param keyExprPattern key expression pattern to watch; {@code "**"}
+     *                       for everything
+     * @param observeTraffic true to also subscribe and record observed keys
+     */
+    public TopicRegistry topics(String keyExprPattern, boolean observeTraffic) throws IOException {
+        return topics(keyExprPattern, observeTraffic, false);
+    }
+
+    /**
+     * As {@link #topics(String, boolean)}, but with a choice of live or
+     * cumulative bookkeeping.
+     *
+     * <p>A live registry answers "what is out there now" and drops a topic
+     * once its last declaration is withdrawn. A cumulative one answers
+     * "what has been out there since I started" and never drops anything;
+     * departed topics stay in the snapshot with {@link TopicInfo#active()}
+     * false. Observed traffic is sticky either way.</p>
+     *
+     * <p>For a cumulative registry that lives as long as the subscriber
+     * does, prefer {@link #startRecordingTopics()} or the
+     * {@code recordTopics} builder flag, which own the lifecycle for
+     * you.</p>
+     *
+     * @param cumulative true to accumulate, false to track live state
+     */
+    public TopicRegistry topics(String keyExprPattern, boolean observeTraffic,
+            boolean cumulative) throws IOException {
+        Objects.requireNonNull(keyExprPattern, "keyExprPattern");
+        ZenohSession s = session;
+        if (s == null || s.state() != SessionState.OPEN) {
+            throw new IOException("PureJavaZenohSubscriber is not started");
+        }
+        String effective = KeyExpr.resolveKey(org, keyExprPattern);
+        TopicRegistry reg = new TopicRegistry(effective, cumulative);
+
+        long id;
+        try {
+            id = s.declareInterest(Interest.Mode.CURRENT_FUTURE,
+                    Interest.OPT_SUBSCRIBERS | Interest.OPT_QUERYABLES | Interest.OPT_TOKENS,
+                    effective,
+                    (declare, isFinal) -> {
+                        if (isFinal) {
+                            reg.markCurrentComplete();
+                            return;
+                        }
+                        Declare.Body body = declare.body();
+                        switch (body.kind()) {
+                            case DECLARE_SUBSCRIBER -> {
+                                DeclareSubscriber d = body.asDeclareSubscriber();
+                                record(reg, s, TopicSource.DECLARED_SUBSCRIBER,
+                                        d.id(), d.keyScope(), d.keySuffix());
+                            }
+                            case UNDECLARE_SUBSCRIBER ->
+                                reg.recordUndeclaration(TopicSource.DECLARED_SUBSCRIBER,
+                                        body.asUndeclareSubscriber().id());
+                            case DECLARE_QUERYABLE -> {
+                                DeclareQueryable d = body.asDeclareQueryable();
+                                record(reg, s, TopicSource.DECLARED_QUERYABLE,
+                                        d.id(), d.keyScope(), d.keySuffix());
+                            }
+                            case UNDECLARE_QUERYABLE ->
+                                reg.recordUndeclaration(TopicSource.DECLARED_QUERYABLE,
+                                        body.asUndeclareQueryable().id());
+                            case DECLARE_TOKEN -> {
+                                DeclareToken d = body.asDeclareToken();
+                                record(reg, s, TopicSource.LIVENESS_TOKEN,
+                                        d.id(), d.keyScope(), d.keySuffix());
+                            }
+                            case UNDECLARE_TOKEN ->
+                                reg.recordUndeclaration(TopicSource.LIVENESS_TOKEN,
+                                        body.asUndeclareToken().id());
+                            default -> {
+                                // DeclareKeyExpr and the RAW fallback (which
+                                // still carries DeclareFinal, id 0x1A) say
+                                // nothing about topics. The session applies
+                                // keyexpr mappings itself before we see this.
+                            }
+                        }
+                    });
+        } catch (SessionException e) {
+            lastError = "topics() interest failed: " + e.getMessage();
+            throw new IOException(lastError, e);
+        }
+        reg.attachInterest(() -> {
+            try {
+                s.finalInterest(id);
+            } catch (SessionException e) {
+                LOG.log(Level.DEBUG, () -> "finalInterest failed: " + e.getMessage());
+            }
+        });
+
+        if (observeTraffic) {
+            try {
+                // Deliberately not subscribe(): org is already folded into
+                // 'effective', and resolveKey is not idempotent for a
+                // non-empty org.
+                Subscription sub = s.declareSubscriber(KeyExpr.of(effective));
+                subscriptions.add(sub);
+                sub.forEach(sample -> reg.recordSample(sample.key()));
+                reg.attachTrafficSubscription(sub);
+            } catch (SessionException e) {
+                // Do not leak the interest we just declared.
+                reg.close();
+                lastError = "topics() traffic subscription failed: " + e.getMessage();
+                throw new IOException(lastError, e);
+            }
+        }
+        return reg;
+    }
+
+    /**
+     * Resolve a wire key and hand it to the registry, or log and drop it.
+     *
+     * <p>A nonzero scope names a keyexpr alias the router interned earlier.
+     * If this session never saw the mapping, the suffix on its own is a
+     * fragment, and reporting a fragment is worse than reporting nothing
+     * because the caller cannot tell the two apart.</p>
+     */
+    private static void record(TopicRegistry reg, ZenohSession s, TopicSource source,
+            long declId, int keyScope, String keySuffix) {
+        String k = s.resolveRemoteKey(keyScope, keySuffix);
+        if (k == null) {
+            LOG.log(Level.WARNING,
+                    "topics: unresolved keyexpr alias scope={0} for {1} id={2}; topic omitted",
+                    keyScope, source, declId);
+            return;
+        }
+        reg.recordDeclaration(source, declId, k);
+    }
+
+    /**
+     * Blocking convenience over {@link #topics(String, boolean)}: collect
+     * topics for up to {@code timeout}, then return the merged, sorted list.
+     *
+     * <p>Waits for the router to finish replaying current declarations, then
+     * spends whatever remains of the budget observing live traffic, then
+     * closes everything. Traffic observation is always on here, since a
+     * caller wanting declarations only has no reason to block.</p>
+     *
+     * <p>The timeout is mandatory and there is no "complete" state to wait
+     * for instead. The declaration replay does finish, but traffic
+     * observation cannot: a topic that stays silent is indistinguishable
+     * from one that does not exist. Longer timeouts therefore find strictly
+     * more, and the result is always a lower bound.</p>
+     *
+     * <p>If the calling thread is interrupted the wait ends early, the
+     * interrupt flag is restored, and whatever was gathered so far is
+     * returned rather than discarded.</p>
+     *
+     * @param keyExprPattern key expression pattern; {@code "**"} for everything
+     * @param timeout        how long to gather; must be positive
+     * @return topics sorted by key expression, never null, possibly empty
+     */
+    public List<TopicInfo> listTopics(String keyExprPattern, Duration timeout) throws IOException {
+        Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive, got " + timeout);
+        }
+        try (TopicRegistry reg = topics(keyExprPattern, true)) {
+            long deadlineNanos = System.nanoTime() + timeout.toNanos();
+            try {
+                reg.awaitCurrent(timeout);
+                long remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000L;
+                if (remainingMs > 0) {
+                    Thread.sleep(remainingMs);
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            return reg.snapshot();
+        }
+    }
+
+    /**
+     * Sugar: {@code listTopics("**", timeout)}. Every topic reachable by any
+     * channel.
+     */
+    public List<TopicInfo> listAllTopics(Duration timeout) throws IOException {
+        return listTopics("**", timeout);
+    }
+
+    // ----- always-on topic recorder --------------------------------------
+    /**
+     * Start accumulating topics for the life of this subscriber, so a later
+     * {@link #recordedTopics()} reports everything seen since recording
+     * began rather than only what happens to be there at that instant.
+     *
+     * <p>Uses the pattern and traffic setting from the builder
+     * ({@code recordTopicsPattern}, default {@code "**"}, and
+     * {@code recordTopicTraffic}, default true). Setting the
+     * {@code recordTopics} builder flag calls this automatically from
+     * {@link #start()}, which is the usual way in.</p>
+     *
+     * <p>Idempotent: calling it again while recording returns the running
+     * registry rather than opening a second one. The subscriber owns the
+     * registry and closes it in {@link #stop()}, so callers should not
+     * close it themselves.</p>
+     *
+     * @return the running cumulative registry
+     * @throws IOException if the subscriber is not started, or the router
+     *                     refuses the interest or the traffic subscription
+     */
+    public TopicRegistry startRecordingTopics() throws IOException {
+        return startRecordingTopics(recordTopicsPattern, recordTopicTraffic);
+    }
+
+    /**
+     * As {@link #startRecordingTopics()} but with an explicit pattern and
+     * traffic setting, overriding the builder values.
+     *
+     * <p>If a recorder is already running, the existing one is returned
+     * unchanged and these arguments are ignored. Stop and restart the
+     * subscriber to record a different pattern.</p>
+     */
+    public synchronized TopicRegistry startRecordingTopics(String keyExprPattern,
+            boolean observeTraffic) throws IOException {
+        TopicRegistry running = recorder;
+        if (running != null && running.isOpen()) {
+            return running;
+        }
+        TopicRegistry reg = topics(keyExprPattern, observeTraffic, true);
+        recorder = reg;
+        LOG.log(Level.INFO,
+                "topic recording started: pattern={0} observeTraffic={1}",
+                reg.pattern(), observeTraffic);
+        return reg;
+    }
+
+    /** Stop the always-on recorder. Idempotent; no-op if not recording. */
+    public synchronized void stopRecordingTopics() {
+        TopicRegistry reg = recorder;
+        recorder = null;
+        if (reg != null) {
+            reg.close();
+            LOG.log(Level.INFO, "topic recording stopped");
+        }
+    }
+
+    /** True if the always-on recorder is running. */
+    public boolean isRecordingTopics() {
+        TopicRegistry reg = recorder;
+        return reg != null && reg.isOpen();
+    }
+
+    /**
+     * The always-on recorder, or null if recording was never started.
+     *
+     * <p>Exposed for callers wanting {@link TopicRegistry#awaitCurrent} or
+     * {@link TopicRegistry#activeOnly()}. Do not close it; use
+     * {@link #stopRecordingTopics()}.</p>
+     */
+    public TopicRegistry topicRegistry() {
+        return recorder;
+    }
+
+    /**
+     * Every topic seen since recording started, sorted by key expression.
+     *
+     * <p>Unlike {@link #listTopics(String, Duration)} this does not block
+     * and does not open anything: the recorder has been listening all
+     * along, so the answer is already there. Topics that have since gone
+     * away are included with {@link TopicInfo#active()} false. Use
+     * {@link TopicRegistry#activeOnly()} on {@link #topicRegistry()} for
+     * only what is still there.</p>
+     *
+     * <p>The longer the subscriber has been running, the more complete
+     * this is, which is the point: a topic that was busy an hour ago and
+     * silent now still shows up.</p>
+     *
+     * @throws IllegalStateException if recording was never started, since
+     *         an empty list would be indistinguishable from "found nothing"
+     */
+    public List<TopicInfo> recordedTopics() {
+        TopicRegistry reg = recorder;
+        if (reg == null) {
+            throw new IllegalStateException(
+                    "topic recording is not enabled; set recordTopics(true) on the "
+                    + "builder or call startRecordingTopics() first");
+        }
+        return reg.snapshot();
     }
 
     // ----- endpoint parsing + transport factory --------------------------
@@ -527,6 +903,9 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
         private char[] keyStorePassword = "changeit".toCharArray();
         private boolean verifyHostname = true;
         private long leaseMs = ZenohSession.DEFAULT_LEASE_MS;
+        private boolean recordTopics = false;
+        private String recordTopicsPattern = "**";
+        private boolean recordTopicTraffic = true;
 
         public Builder connectEndpoint(String v) {
             this.connectEndpoint = v;
@@ -565,6 +944,48 @@ public final class PureJavaZenohSubscriber implements AutoCloseable {
 
         public Builder leaseMs(long v) {
             this.leaseMs = v;
+            return this;
+        }
+
+        /**
+         * Record every topic seen, for as long as this subscriber runs.
+         *
+         * <p>{@link #start()} opens a cumulative {@link TopicRegistry} and
+         * leaves it running, so {@link #recordedTopics()} can answer at any
+         * time with everything seen since start, including topics that
+         * have since gone away. Default false.</p>
+         *
+         * <p>If the registry cannot be opened, start() logs a WARNING and
+         * carries on rather than failing, since ordinary subscribing
+         * should not depend on discovery being permitted.</p>
+         */
+        public Builder recordTopics(boolean v) {
+            this.recordTopics = v;
+            return this;
+        }
+
+        /**
+         * Key expression pattern the recorder watches. Default {@code "**"}
+         * (everything). Narrow it to cut the traffic volume on a busy
+         * network. Ignored unless {@link #recordTopics(boolean)} is set.
+         */
+        public Builder recordTopicsPattern(String v) {
+            this.recordTopicsPattern = v;
+            return this;
+        }
+
+        /**
+         * Whether the recorder also subscribes to its pattern to catch keys
+         * that carry data but that nobody declared. Default true.
+         *
+         * <p>Set false to stay passive, which avoids pulling in every
+         * matching message and works where an ACL permits discovery but
+         * not subscription. The cost is losing the one source that proves
+         * data is actually flowing. Ignored unless
+         * {@link #recordTopics(boolean)} is set.</p>
+         */
+        public Builder recordTopicTraffic(boolean v) {
+            this.recordTopicTraffic = v;
             return this;
         }
 

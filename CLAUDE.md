@@ -27,5 +27,35 @@ gcloud auth application-default login
 
 ## Documentation style
 
-When writing documentation, do not use em-dashes. Write in simple, clear,
-and complete sentences.
+Never use em-dashes. This applies everywhere, including javadoc, commit
+messages, and `.claude/SESSION.log`.
+
+Two registers in this repo. Which one you use depends on the file.
+
+### README.md and API.md: talk like a person
+
+Write these the way you would explain the thing to someone sitting next
+to you. Not an essay. A conversation.
+
+- Use spoken phrasing and contractions freely. "I'm", "don't", "that's",
+  "you'll", "it's".
+- Vary sentence length. Mix very short punchy sentences with longer ones
+  that breathe. Fragments are fine here.
+- Banned words: "additionally", "furthermore", "delve", "robust",
+  "cutting-edge", "in conclusion", "ultimately", "paramount". Also skip
+  the rest of that family when you catch yourself reaching for it.
+- No structural fluff. Skip the formal intro paragraph, skip the bulleted
+  summary at the end, skip balanced "on the one hand / on the other"
+  transitions. Get to the point.
+- Brief asides and natural pauses are welcome. Real thinking sounds like
+  that.
+
+Accuracy still wins. Casual does not mean vague, and it does not mean
+softening a caveat. If a thing is a lower bound, say so plainly.
+
+### Javadoc and everything else: stay precise
+
+Javadoc keeps the formal register. Simple, clear, complete sentences.
+`@param` and `@return` stay terse and factual, and wire-layout comments
+stay exact. The generated API docs on GitHub Pages are reference
+material, so they read like reference material.

@@ -26,3 +26,5 @@ Thumbs.db
 *.jks
 *.pem
 !src/**/test-*.pem
+
+agy*

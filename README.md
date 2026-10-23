@@ -49,7 +49,19 @@ mvn -q package                              # compile + test + produce target/*.
 java -cp target/classes sample.zenoh.ZenohJavaPub
 ```
 
-Or run the platform helpers (they use `target/classes`, so
+That first command leaves a JAR in `target/`. That's the thing you
+actually ship with: put it on your classpath, or `mvn install` it into
+your local repo and depend on it, then write against the API the way
+the code examples further down do. This is the path you want in almost
+every case.
+
+You can also skip the JAR and copy the `io/mdudel/zenoh/purejava`
+source tree straight into your own project. It's pure JDK 17 with zero
+runtime dependencies, so nothing tags along. The tradeoff is that your
+build now owns this code. Compile times, warnings, and keeping up with
+changes here all become your problem.
+
+Or run the sample code (the `.bat` files use `target/classes`, so
 `mvn compile` is enough):
 
 ```
@@ -83,8 +95,7 @@ The priority (one of `control`, `real_time`, `interactive_high`,
 be set through `--qos=<name>` or the older `--priority=<name>` (same
 names, `--qos` wins if both are given), or falls back to the batch
 file's own `QOS` default (`data`, which composes to `Qos.DEFAULT` and
-emits no QoS extension at all, so the wire output is byte-identical to
-the pre-QoS client).
+emits no QoS extension at all, so nothing extra goes out on the wire).
 Congestion control and the Express bit are separate flags:
 
 ```
@@ -290,6 +301,118 @@ See [`ZenohJavaPub.java`](src/main/java/sample/zenoh/ZenohJavaPub.java)
 and [`ZenohJavaSub.java`](src/main/java/sample/zenoh/ZenohJavaSub.java)
 for the full runnable versions with CLI args, error handling, and TLS
 notes in the class Javadoc.
+
+## Topic discovery: listing active topics
+
+Zenoh doesn't have a topic registry. There's no list to fetch and no
+call that'll hand you one, so anybody promising you a definitive answer
+is making it up.
+
+What this client does instead is watch four different things and merge
+them. Each one sees a slice of the network, each one is blind to
+something else, and every topic you get back is tagged with which ones
+saw it. That way you can decide for yourself how much to trust it.
+
+| Source | What it proves | What it misses |
+| --- | --- | --- |
+| `DECLARED_SUBSCRIBER` | Someone is listening on this key. | A key with a publisher but no subscriber. |
+| `DECLARED_QUERYABLE` | Someone answers queries on this key. | Anything that isn't a queryable. |
+| `LIVENESS_TOKEN` | A peer is explicitly saying "I'm alive here". | Apps that never bother declaring tokens. |
+| `OBSERVED_TRAFFIC` | Data is really flowing on this key. | Any topic that stayed quiet while you were watching. |
+
+### Always-on recording (start here)
+
+Flip one builder flag and the subscriber keeps a running tally of every
+topic it sees. Then just ask it, whenever, no blocking:
+
+```java
+PureJavaZenohSubscriber zenohSubscriber = PureJavaZenohSubscriber.builder()
+        .connectEndpoint("tcp/localhost:7447")
+        .recordTopics(true)              // record for the life of the subscriber
+        .recordTopicsPattern("**")       // default: everything
+        .recordTopicTraffic(true)        // default: also watch real messages
+        .build();
+
+zenohSubscriber.start();                 // recording begins here
+
+// ... minutes or hours later, from any thread ...
+
+for (TopicInfo t : zenohSubscriber.recordedTopics()) {
+    System.out.printf("%-40s %-9s %-12s %s%n",
+            t.keyExpr(),
+            t.active() ? "active" : "gone",
+            t.hasTraffic() ? t.sampleCount() + " samples" : "no traffic",
+            t.sources());
+}
+```
+
+You get everything seen since `start()`, not just whatever happens to
+be there the second you ask. A topic that was hammering away an hour
+ago and has gone quiet since? Still in the list, with `active()` false
+once its declarations get withdrawn. Want only what's still there right
+now? `zenohSubscriber.topicRegistry().activeOnly()`.
+
+This is the one to reach for. The longer your process runs, the better
+the answer gets, which is sort of the whole trick. You can also toggle
+it at runtime with `startRecordingTopics()` and `stopRecordingTopics()`,
+and `isRecordingTopics()` tells you where you stand.
+
+Now, a router might let you open a session and still refuse the
+discovery interest or the wildcard subscription. If that happens,
+`start()` logs a warning and keeps going instead of blowing up, because
+your actual subscriptions shouldn't die just because discovery isn't
+allowed. `recordedTopics()` will throw `IllegalStateException` in that
+case. That's on purpose. An empty list would look exactly like "I
+looked and found nothing", and that's a lie.
+
+### Just asking once
+
+Don't want a recorder sitting there? Block for a window and take what
+you get:
+
+```java
+List<TopicInfo> topics = zenohSubscriber.listTopics("**", Duration.ofSeconds(5));
+```
+
+You'll see what showed up in those five seconds. That's it. The timeout
+isn't optional, and there's no way around that: traffic observation has
+no finish line. A topic sitting silent looks identical to a topic that
+doesn't exist. Wait longer, find more. The answer is always a floor,
+never proof that something isn't out there. Which is exactly why the
+recorder above is the better habit.
+
+### Polling a live view
+
+For "what's out there this instant", with departures dropping off as
+they happen:
+
+```java
+try (TopicRegistry registry = zenohSubscriber.topics("**", true)) {
+    registry.awaitCurrent(Duration.ofSeconds(2));   // router finished the replay
+    for (TopicInfo t : registry.snapshot()) {
+        System.out.println(t);
+    }
+}
+```
+
+Registries come in two flavours. Live ones drop a topic once its last
+declaration goes away. Cumulative ones never drop anything.
+`topics(pattern, observeTraffic)` hands you a live one, the recorder
+uses a cumulative one, and `topics(pattern, observeTraffic, cumulative)`
+lets you say which. Observed traffic sticks around either way, because
+a message that genuinely arrived isn't something a later event gets to
+take back.
+
+One gotcha that applies to all of these. That `observeTraffic` boolean
+decides whether a real subscription gets opened. Point a broad pattern
+at a busy network and you're hauling in every matching message just to
+read its key off the top. An ACL might also let you discover but not
+subscribe. Pass `false` and you stay passive, living off declarations
+alone.
+
+All of it works the same over plain TCP, TLS, mTLS, and WebSocket.
+Discovery rides your ordinary session, so you don't need the router's
+admin space or its REST plugin.
 
 ## Scout: core sample code
 

@@ -31,9 +31,9 @@ import java.util.Objects;
  *
  * <p>Callers that use {@link #buildPushExtensions(Qos, Timestamp, long)}
  * get an extension list that is empty (i.e. no extensions to emit) when
- * every argument is at its default. This lets a publisher emit
- * byte-identical wire output to the pre-QoS version of this client when
- * the caller does not opt in.</p>
+ * every argument is at its default. This lets a publisher leave the
+ * Z-flag clear and emit no extension bytes when the caller does not opt
+ * in.</p>
  */
 public final class PushExts {
 
@@ -99,8 +99,8 @@ public final class PushExts {
      * </ul>
      *
      * <p>If all three skip, returns {@link java.util.Collections#emptyList()}
-     * so the caller's Z-flag stays clear and the wire output is
-     * byte-identical to the pre-QoS client.</p>
+     * so the caller's Z-flag stays clear and no extension bytes are
+     * written.</p>
      */
     public static List<Extension> buildPushExtensions(Qos qos, Timestamp ts, long nodeId) {
         boolean haveQos = (qos != null && !qos.isDefault());

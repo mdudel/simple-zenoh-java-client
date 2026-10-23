@@ -165,8 +165,8 @@ public class ZenohJavaPub {
         int    count    = positional.size() > 2 ? Integer.parseInt(positional.get(2)) : 5;
         long   interval = positional.size() > 3 ? Long.parseLong(positional.get(3)) : 1_000L;
 
-        // Compose Qos from the flags (or leave it at DEFAULT so the wire
-        // byte matches pre-QoS behaviour exactly).
+        // Compose Qos from the flags (or leave it at DEFAULT, which
+        // suppresses the QoS extension entirely).
         Qos qos;
         if (priority == null && congestion == CongestionControl.DROP && !express) {
             qos = Qos.DEFAULT;
@@ -192,8 +192,7 @@ public class ZenohJavaPub {
             // TLS/mTLS add .rootCaCertPath(...) / .clientCertPath(...)
             // / .clientKeyPath(...) etc. before .build(). The QoS /
             // Timestamp / NodeId knobs are all opt-in; passing DEFAULT /
-            // false / 0 gives byte-identical wire output vs the pre-QoS
-            // publisher.
+            // false / 0 emits no extension bytes at all.
             PureJavaZenohPublisher zenohPublisher = PureJavaZenohPublisher.builder()
                     .connectEndpoint(endpoint)
                     .keyExpr(key)

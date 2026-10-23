@@ -89,18 +89,18 @@ class PushExtsTest {
         assertEquals(PushExts.EXT_ID_NODE_ID,   exts.get(2).id());
     }
 
-    // ---- byte-identical backward compat --------------------------------
+    // ---- overloads agree on the default wire shape ----------------------
 
     @Test void pushOfPutWithDefaultsProducesByteIdenticalWireOutput() {
         // The whole point of the additive design: passing default args to
-        // the new overload MUST yield the same bytes as the pre-QoS overload.
+        // the extended overload MUST yield the same bytes as the short one.
         Put put = Put.ofString("hello");
-        byte[] pre  = Push.ofPut("k/e/y", put).encode();
-        byte[] post = Push.ofPut("k/e/y", put, null,       null, 0L).encode();
-        byte[] postDefaultQos =
-                     Push.ofPut("k/e/y", put, Qos.DEFAULT, null, 0L).encode();
-        assertArrayEquals(pre, post);
-        assertArrayEquals(pre, postDefaultQos);
+        byte[] shortForm = Push.ofPut("k/e/y", put).encode();
+        byte[] extended  = Push.ofPut("k/e/y", put, null,       null, 0L).encode();
+        byte[] extendedDefaultQos =
+                           Push.ofPut("k/e/y", put, Qos.DEFAULT, null, 0L).encode();
+        assertArrayEquals(shortForm, extended);
+        assertArrayEquals(shortForm, extendedDefaultQos);
     }
 
     @Test void pushOfPutWithNonDefaultQosSetsZFlagAndAppendsExtension() {

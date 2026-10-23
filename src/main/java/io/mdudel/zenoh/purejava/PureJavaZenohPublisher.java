@@ -83,8 +83,8 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
     private final long      leaseMs;
     // ----- optional per-publisher defaults for QoS / Timestamp / NodeId --
     // Any of these can be overridden per publish call via the extended
-    // publish(...) overloads. All are opt-in: with builder defaults, the
-    // wire output is byte-identical to the pre-QoS client.
+    // publish(...) overloads. All are opt-in: with builder defaults, no
+    // extension bytes are emitted at all.
     private final Qos       defaultQos;        // null-safe: Qos.DEFAULT means "no ext emitted"
     private final boolean   autoTimestamp;     // if true, stamp every publish with now()+session.zid()
     private final long      defaultNodeId;     // 0 = no ext emitted
@@ -186,8 +186,8 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
      * Publish to {@code effectiveKeyExpr/subKey} if {@code subKey} is
      * non-null and non-empty, otherwise to the base key. Uses the
      * publisher-scope defaults for QoS / auto-timestamp / node id (see
-     * the {@link Builder}). With default builder values, wire output is
-     * byte-identical to the pre-QoS client.
+     * the {@link Builder}). With default builder values, no extensions
+     * are emitted and the Z-flag stays clear.
      */
     public void publish(String subKey, byte[] data) throws IOException {
         publish(subKey, data, defaultQos, autoTimestamp ? nowTimestamp() : null, defaultNodeId);
@@ -214,8 +214,8 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
 
     /**
      * Full-fidelity publish overload with explicit QoS / Timestamp /
-     * NodeId. Any argument at its default value produces the
-     * byte-identical pre-QoS wire shape for that extension:
+     * NodeId. Any argument at its default value suppresses the
+     * corresponding extension entirely:
      *
      * <ul>
      *   <li>{@code qos == null} or {@link Qos#DEFAULT} - no QoS ext.</li>
@@ -224,8 +224,8 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
      * </ul>
      *
      * <p>Passing {@code qos == Qos.DEFAULT, ts == null, nodeId == 0}
-     * gives byte-for-byte identical wire output to the historical
-     * {@link #publish(String, byte[])} behaviour.</p>
+     * emits no extensions at all, producing byte-for-byte identical
+     * wire output to {@link #publish(String, byte[])}.</p>
      */
     public void publish(String subKey, byte[] data, Qos qos, Timestamp ts, long nodeId) throws IOException {
         ZenohSession s = session;
@@ -491,14 +491,13 @@ public final class PureJavaZenohPublisher implements AutoCloseable {
          * If true, every publish call stamps the outbound message with a
          * fresh {@link Timestamp} carrying {@code System.currentTimeMillis()}
          * and the session's ZenohId. Default: false (no Timestamp extension
-         * emitted; wire is byte-identical to the pre-QoS client).
+         * emitted).
          */
         public Builder autoTimestamp(boolean v) { this.autoTimestamp = v; return this; }
 
         /**
          * Publisher-scope NodeId (u32 routing origin). 0 (the default)
-         * suppresses the NodeId extension on the wire, keeping output
-         * byte-identical to the pre-QoS client.
+         * suppresses the NodeId extension on the wire entirely.
          */
         public Builder originNodeId(long v) {
             if (v < 0 || v > 0xFFFFFFFFL) {

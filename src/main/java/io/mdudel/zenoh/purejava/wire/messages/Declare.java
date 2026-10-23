@@ -13,7 +13,7 @@ import java.util.List;
 
 /**
  * The Zenoh network-level DECLARE message: a container that carries a
- * single {@link DeclareBody} entry (DeclareSubscriber, UndeclareSubscriber,
+ * single {@link Body} entry (DeclareSubscriber, UndeclareSubscriber,
  * DeclareKeyExpr, etc.) plus network-message-level extensions
  * (QoS, Timestamp, NodeId).
  *
@@ -42,10 +42,17 @@ import java.util.List;
  * </ul>
  *
  * <p>Body dispatch matches Rust's {@code DeclareBody} enum via the
- * first byte of the {@code declaration} tail; we currently know
- * about {@link DeclareSubscriber} (0x02) and {@link UndeclareSubscriber}
- * (0x03). Other bodies are exposed as {@link BodyKind#RAW} with the
- * raw payload bytes preserved so unknown bodies round-trip.</p>
+ * first byte of the {@code declaration} tail. Decoded bodies are:</p>
+ * <ul>
+ *   <li>{@link DeclareKeyExpr} (0x00) / {@link UndeclareKeyExpr} (0x01)</li>
+ *   <li>{@link DeclareSubscriber} (0x02) / {@link UndeclareSubscriber} (0x03)</li>
+ *   <li>{@link DeclareQueryable} (0x04) / {@link UndeclareQueryable} (0x05)</li>
+ *   <li>{@link DeclareToken} (0x06) / {@link UndeclareToken} (0x07)</li>
+ * </ul>
+ *
+ * <p>Other bodies, notably the DeclareFinal sentinel (0x1A) that closes
+ * an interest, are exposed as {@link Body.BodyKind#RAW} with the raw payload
+ * bytes preserved so unknown bodies round-trip byte-identically.</p>
  */
 public record Declare(
         Long            interestId,             // null iff I==0
@@ -121,45 +128,71 @@ public record Declare(
      */
     public static final class Body {
 
-        public enum BodyKind { DECLARE_KEY_EXPR, UNDECLARE_KEY_EXPR, DECLARE_SUBSCRIBER, UNDECLARE_SUBSCRIBER, RAW }
+        public enum BodyKind {
+            DECLARE_KEY_EXPR, UNDECLARE_KEY_EXPR,
+            DECLARE_SUBSCRIBER, UNDECLARE_SUBSCRIBER,
+            DECLARE_QUERYABLE, UNDECLARE_QUERYABLE,
+            DECLARE_TOKEN, UNDECLARE_TOKEN,
+            RAW
+        }
 
         private final BodyKind             kind;
         private final DeclareKeyExpr       declareKeyExpr;
         private final UndeclareKeyExpr     undeclareKeyExpr;
         private final DeclareSubscriber    declareSubscriber;
         private final UndeclareSubscriber  undeclareSubscriber;
+        private final DeclareQueryable     declareQueryable;
+        private final UndeclareQueryable   undeclareQueryable;
+        private final DeclareToken         declareToken;
+        private final UndeclareToken       undeclareToken;
         private final byte[]               rawBytes;    // header byte + body, for RAW
 
         private Body(BodyKind kind, DeclareKeyExpr dk, UndeclareKeyExpr uk,
                      DeclareSubscriber ds,
                      UndeclareSubscriber us,
+                     DeclareQueryable dq,
+                     UndeclareQueryable uq,
+                     DeclareToken dt,
+                     UndeclareToken ut,
                      byte[] raw) {
             this.kind = kind;
             this.declareKeyExpr = dk;
             this.undeclareKeyExpr = uk;
             this.declareSubscriber = ds;
             this.undeclareSubscriber = us;
+            this.declareQueryable = dq;
+            this.undeclareQueryable = uq;
+            this.declareToken = dt;
+            this.undeclareToken = ut;
             this.rawBytes = raw == null ? null : raw.clone();
         }
 
-        public static Body of(DeclareKeyExpr dk) { return new Body(BodyKind.DECLARE_KEY_EXPR, dk, null, null, null, null); }
-        public static Body of(UndeclareKeyExpr uk) { return new Body(BodyKind.UNDECLARE_KEY_EXPR, null, uk, null, null, null); }
-        public static Body of(DeclareSubscriber ds) { return new Body(BodyKind.DECLARE_SUBSCRIBER, null, null, ds, null, null); }
-        public static Body of(UndeclareSubscriber us) { return new Body(BodyKind.UNDECLARE_SUBSCRIBER, null, null, null, us, null); }
+        public static Body of(DeclareKeyExpr dk) { return new Body(BodyKind.DECLARE_KEY_EXPR, dk, null, null, null, null, null, null, null, null); }
+        public static Body of(UndeclareKeyExpr uk) { return new Body(BodyKind.UNDECLARE_KEY_EXPR, null, uk, null, null, null, null, null, null, null); }
+        public static Body of(DeclareSubscriber ds) { return new Body(BodyKind.DECLARE_SUBSCRIBER, null, null, ds, null, null, null, null, null, null); }
+        public static Body of(UndeclareSubscriber us) { return new Body(BodyKind.UNDECLARE_SUBSCRIBER, null, null, null, us, null, null, null, null, null); }
+        public static Body of(DeclareQueryable dq) { return new Body(BodyKind.DECLARE_QUERYABLE, null, null, null, null, dq, null, null, null, null); }
+        public static Body of(UndeclareQueryable uq) { return new Body(BodyKind.UNDECLARE_QUERYABLE, null, null, null, null, null, uq, null, null, null); }
+        public static Body of(DeclareToken dt) { return new Body(BodyKind.DECLARE_TOKEN, null, null, null, null, null, null, dt, null, null); }
+        public static Body of(UndeclareToken ut) { return new Body(BodyKind.UNDECLARE_TOKEN, null, null, null, null, null, null, null, ut, null); }
         /** Build a RAW body from the FULL sub-message bytes (header byte first). */
         public static Body ofRaw(byte[] fullBodyBytes) {
             if (fullBodyBytes == null || fullBodyBytes.length == 0) {
                 throw new IllegalArgumentException("raw body must be non-empty");
             }
-            return new Body(BodyKind.RAW, null, null, null, null, fullBodyBytes);
+            return new Body(BodyKind.RAW, null, null, null, null, null, null, null, null, fullBodyBytes);
         }
 
-        public BodyKind             kind()                { return kind; }
-        public DeclareKeyExpr       asDeclareKeyExpr()    { return declareKeyExpr; }
-        public UndeclareKeyExpr     asUndeclareKeyExpr()  { return undeclareKeyExpr; }
-        public DeclareSubscriber    asDeclareSubscriber() { return declareSubscriber; }
+        public BodyKind             kind()                 { return kind; }
+        public DeclareKeyExpr       asDeclareKeyExpr()     { return declareKeyExpr; }
+        public UndeclareKeyExpr     asUndeclareKeyExpr()   { return undeclareKeyExpr; }
+        public DeclareSubscriber    asDeclareSubscriber()  { return declareSubscriber; }
         public UndeclareSubscriber  asUndeclareSubscriber(){ return undeclareSubscriber; }
-        public byte[]               rawBytes()            { return rawBytes == null ? null : rawBytes.clone(); }
+        public DeclareQueryable     asDeclareQueryable()   { return declareQueryable; }
+        public UndeclareQueryable   asUndeclareQueryable() { return undeclareQueryable; }
+        public DeclareToken         asDeclareToken()       { return declareToken; }
+        public UndeclareToken       asUndeclareToken()     { return undeclareToken; }
+        public byte[]               rawBytes()             { return rawBytes == null ? null : rawBytes.clone(); }
 
         void encode(WBuf w) {
             switch (kind) {
@@ -167,6 +200,10 @@ public record Declare(
                 case UNDECLARE_KEY_EXPR   -> undeclareKeyExpr.encode(w);
                 case DECLARE_SUBSCRIBER   -> declareSubscriber.encode(w);
                 case UNDECLARE_SUBSCRIBER -> undeclareSubscriber.encode(w);
+                case DECLARE_QUERYABLE    -> declareQueryable.encode(w);
+                case UNDECLARE_QUERYABLE  -> undeclareQueryable.encode(w);
+                case DECLARE_TOKEN        -> declareToken.encode(w);
+                case UNDECLARE_TOKEN      -> undeclareToken.encode(w);
                 case RAW                  -> w.bytes(rawBytes);
             }
         }
@@ -179,6 +216,10 @@ public record Declare(
                 case UndeclareKeyExpr.ID   -> of(UndeclareKeyExpr.decode(header, r));
                 case DeclareSubscriber.ID  -> of(DeclareSubscriber.decode(header, r));
                 case UndeclareSubscriber.ID -> of(UndeclareSubscriber.decode(header, r));
+                case DeclareQueryable.ID   -> of(DeclareQueryable.decode(header, r));
+                case UndeclareQueryable.ID -> of(UndeclareQueryable.decode(header, r));
+                case DeclareToken.ID       -> of(DeclareToken.decode(header, r));
+                case UndeclareToken.ID     -> of(UndeclareToken.decode(header, r));
                 default -> {
                     // Consume the rest of the buffer as an opaque RAW body.
                     // We include the header byte so a Body.ofRaw(bytes)-then-encode
@@ -199,6 +240,10 @@ public record Declare(
                 case UNDECLARE_KEY_EXPR   -> "Body{" + undeclareKeyExpr + "}";
                 case DECLARE_SUBSCRIBER   -> "Body{" + declareSubscriber   + "}";
                 case UNDECLARE_SUBSCRIBER -> "Body{" + undeclareSubscriber + "}";
+                case DECLARE_QUERYABLE    -> "Body{" + declareQueryable    + "}";
+                case UNDECLARE_QUERYABLE  -> "Body{" + undeclareQueryable  + "}";
+                case DECLARE_TOKEN        -> "Body{" + declareToken        + "}";
+                case UNDECLARE_TOKEN      -> "Body{" + undeclareToken      + "}";
                 case RAW                  -> "Body{RAW(" + rawBytes.length + "B)}";
             };
         }

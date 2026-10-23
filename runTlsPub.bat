@@ -17,8 +17,7 @@ REM   --qos=<name>            sets the publisher-scope priority. Alias for
 REM                           --priority (same valid names below); if both
 REM                           are given, --qos wins. Default when neither
 REM                           is given: the QOS preset below ("data" ->
-REM                           no QoS extension emitted, byte-identical to
-REM                           the pre-QoS client).
+REM                           no QoS extension emitted at all).
 REM   --priority=<name>       control | real_time | interactive_high |
 REM                           interactive_low | data_high | data (default) |
 REM                           data_low | background  (also accepts dashes)

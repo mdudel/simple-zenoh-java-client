@@ -741,7 +741,23 @@ public final class ZenohSession implements AutoCloseable {
                 "reader: PUSH key='" + key + "' routed to " + matchedFinal + " subscription(s)");
     }
 
-    private String resolveRemoteKey(int scope, String suffix) {
+    /**
+     * Resolve a wire key expression, which Zenoh transmits as a
+     * {@code (scope, suffix)} pair, into a full key string.
+     *
+     * <p>A scope of 0 means the suffix is the whole key. A nonzero scope
+     * references a key-expression alias the peer interned earlier with a
+     * DeclareKeyExpr, in which case the real key is that alias followed by
+     * the suffix. Routers intern long keys routinely, so any code that
+     * reads a key off an inbound DECLARE must go through here rather than
+     * using the suffix directly.</p>
+     *
+     * @param scope  u16 key scope from the wire, 0 for "no alias"
+     * @param suffix key suffix from the wire, may be null
+     * @return the full key expression, or {@code null} if the scope names
+     *         an alias this session has not seen a mapping for
+     */
+    public String resolveRemoteKey(int scope, String suffix) {
         String tail = suffix == null ? "" : suffix;
         if (scope == 0) return tail;
         String prefix = remoteKeyExprs.get(scope);
